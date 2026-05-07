@@ -535,6 +535,8 @@ async def tradingview_handler(request: web.Request):
 
 # ─── MAIN ─────────────────────────────────────────────────
 
+from aiohttp import web
+
 async def main():
     # Init database
     await init_db()
@@ -548,12 +550,12 @@ async def main():
     application.add_handler(CommandHandler("balance", balance_command))
     application.add_handler(CommandHandler("sentiment", sentiment_command))
 
-    application.add_handler(CallbackQueryHandler(subscribe_callback,         pattern="^subscribe$"))
-    application.add_handler(CallbackQueryHandler(approve_callback,           pattern="^(approve|reject)_"))
-    application.add_handler(CallbackQueryHandler(sentiment_callback,         pattern="^sent_"))
-    application.add_handler(CallbackQueryHandler(execute_pending_callback,   pattern="^execute_"))
-    application.add_handler(CallbackQueryHandler(skip_pending_callback,      pattern="^skip_"))
-    application.add_handler(CallbackQueryHandler(admin_pending_subs_callback,pattern="^admin_pending_subs$"))
+    application.add_handler(CallbackQueryHandler(subscribe_callback, pattern="^subscribe$"))
+    application.add_handler(CallbackQueryHandler(approve_callback, pattern="^(approve|reject)_"))
+    application.add_handler(CallbackQueryHandler(sentiment_callback, pattern="^sent_"))
+    application.add_handler(CallbackQueryHandler(execute_pending_callback, pattern="^execute_"))
+    application.add_handler(CallbackQueryHandler(skip_pending_callback, pattern="^skip_"))
+    application.add_handler(CallbackQueryHandler(admin_pending_subs_callback, pattern="^admin_pending_subs$"))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
@@ -562,23 +564,24 @@ async def main():
     aio_app["telegram_app"] = application
     aio_app.router.add_post("/webhook", tradingview_handler)
 
-    # Start everything
-     await application.initialize()
-     await application.start()
+    await application.initialize()
+    await application.start()
 
- runner = web.AppRunner(aio_app)
-     await runner.setup()
+    runner = web.AppRunner(aio_app)
+    await runner.setup()
 
- site = web.TCPSite(runner, "0.0.0.0", 8080)
-     await site.start()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
 
- logger.info("🚀 Bot started! Listening on port 8080...")
- try:
-     await asyncio.Event().wait()
- finally:
-     await application.stop()
-     await application.shutdown()
-     await runner.cleanup()
- 
- if __name__ == "__main__":
+    logger.info("🚀 Bot started! Listening on port 8080...")
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await application.stop()
+        await application.shutdown()
+        await runner.cleanup()
+
+
+if __name__ == "__main__":
     asyncio.run(main())
