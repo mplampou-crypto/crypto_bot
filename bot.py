@@ -1,4 +1,5 @@
 import asyncio
+from email.mime import application
 import logging
 from datetime import datetime, timezone, timedelta
 from telegram import (
@@ -562,25 +563,22 @@ async def main():
     aio_app.router.add_post("/webhook", tradingview_handler)
 
     # Start everything
-    await application.initialize()
-    await application.start()
-    
-    runner = web.AppRunner(aio_app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8080)
-    await site.start()
+ await application.initialize()
+ await application.start()
 
-    logger.info("🚀 Bot started! Listening on port 8080...")
+ runner = web.AppRunner(aio_app)
+ await runner.setup()
 
-    # Keep alive
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
-        await runner.cleanup()
+ site = web.TCPSite(runner, "0.0.0.0", 8080)
+ await site.start()
 
-
-if __name__ == "__main__":
+ logger.info("🚀 Bot started! Listening on port 8080...")
+ try:
+    await asyncio.Event().wait()
+ finally:
+    await application.stop()
+    await application.shutdown()
+    await runner.cleanup()
+ 
+ if __name__ == "__main__":
     asyncio.run(main())
