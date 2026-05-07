@@ -22,7 +22,7 @@ async def fetch_news(query: str, hours_back: int = 6) -> list:
         "from": from_time,
         "sortBy": "publishedAt",
         "language": "en",
-        "apiKey": NEWSAPI_KEY,
+        "apiKey": "79787d44cd924e33b95e9ab624526d2e",
         "pageSize": 20,
     }
 
