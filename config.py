@@ -18,19 +18,30 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # --- TRADING DEFAULTS ---
-DEFAULT_LEVERAGE  = 25
-DEFAULT_USDT      = 100
-DEFAULT_SL_PCT    = 1.0
-DEFAULT_TP_PCT    = 2.0
-MIN_SIGNAL_SCORE  = 80
+DEFAULT_LEVERAGE  = 50       # 50x leverage
+DEFAULT_USDT      = 100      # 100€ margin
+DEFAULT_SL_PCT    = 2.0      # Stop Loss 2% (unchanged)
+DEFAULT_TP_PCT    = 0.5      # Take Profit 0.5% → +25€ profit με 50x/100€
+MIN_SIGNAL_SCORE  = 80       # Ελάχιστο score για trade
+
+# --- BREAK EVEN ---
+# Μόλις το trade κερδίσει X% της απόστασης TP → μεταφέρε SL στο entry
+BREAKEVEN_TRIGGER_PCT = 50   # Όταν φτάσει 50% του δρόμου προς TP
+TRAILING_STOP_ACTIVE  = True # Trailing stop μετά το break even
+
+# --- MAX RISK MANAGEMENT ---
+MAX_DAILY_TRADES      = 5    # Μέγιστος αριθμός trades ανά μέρα
+MAX_CONSECUTIVE_LOSSES = 3   # Σταμάτα μετά από 3 consecutive losses
+POSITION_SIZE_PCT     = 10   # % του balance ανά trade (αν δεν οριστεί manual)
 
 # --- MANUAL APPROVAL WINDOW (EET = UTC+3) ---
 MANUAL_HOUR_START = 11
 MANUAL_HOUR_END   = 14
 
 # --- SUBSCRIPTION ---
-SUBSCRIPTION_PRICE  = 25
-PAYSAFE_CODE_LENGTH = 12
+SUBSCRIPTION_PRICE    = 25
+PAYSAFE_CODE_LENGTH   = 12
+SUBSCRIPTION_DAYS     = 30   # 1 μήνας
 
 # --- TRADING PAIRS ---
 TRADING_PAIRS = [
