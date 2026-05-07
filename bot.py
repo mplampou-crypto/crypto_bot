@@ -563,22 +563,22 @@ async def main():
     aio_app.router.add_post("/webhook", tradingview_handler)
 
     # Start everything
- await application.initialize()
- await application.start()
+     await application.initialize()
+     await application.start()
 
  runner = web.AppRunner(aio_app)
- await runner.setup()
+     await runner.setup()
 
  site = web.TCPSite(runner, "0.0.0.0", 8080)
- await site.start()
+     await site.start()
 
  logger.info("🚀 Bot started! Listening on port 8080...")
  try:
-    await asyncio.Event().wait()
+     await asyncio.Event().wait()
  finally:
-    await application.stop()
-    await application.shutdown()
-    await runner.cleanup()
+     await application.stop()
+     await application.shutdown()
+     await runner.cleanup()
  
  if __name__ == "__main__":
     asyncio.run(main())
