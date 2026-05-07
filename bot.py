@@ -564,8 +564,7 @@ async def main():
     # Start everything
     await application.initialize()
     await application.start()
-    await application.updater.start_polling()
-
+    
     runner = web.AppRunner(aio_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 8080)
