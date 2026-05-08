@@ -20,9 +20,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # --- TRADING DEFAULTS ---
 DEFAULT_LEVERAGE  = 50       # 50x leverage
 DEFAULT_USDT      = 100      # 100€ margin
-DEFAULT_SL_PCT    = 2.0      # Stop Loss 2% (unchanged)
-DEFAULT_TP_PCT    = 0.5      # Take Profit 0.5% → +25€ profit με 50x/100€
-MIN_SIGNAL_SCORE  = 80       # Ελάχιστο score για trade
+DEFAULT_SL_PCT = 0.8   # -40€
+DEFAULT_TP_PCT = 0.2   # +10€
+MIN_SIGNAL_SCORE  = 79      # Ελάχιστο score για trade
 
 # --- BREAK EVEN ---
 # Μόλις το trade κερδίσει X% της απόστασης TP → μεταφέρε SL στο entry
@@ -30,9 +30,9 @@ BREAKEVEN_TRIGGER_PCT = 50   # Όταν φτάσει 50% του δρόμου π�
 TRAILING_STOP_ACTIVE  = True # Trailing stop μετά το break even
 
 # --- MAX RISK MANAGEMENT ---
-MAX_DAILY_TRADES      = 5    # Μέγιστος αριθμός trades ανά μέρα
+MAX_DAILY_TRADES      = 15   # Μέγιστος αριθμός trades ανά μέρα
 MAX_CONSECUTIVE_LOSSES = 3   # Σταμάτα μετά από 3 consecutive losses
-POSITION_SIZE_PCT     = 10   # % του balance ανά trade (αν δεν οριστεί manual)
+POSITION_SIZE_PCT     = 100  # % του balance ανά trade (αν δεν οριστεί manual)
 
 # --- MANUAL APPROVAL WINDOW (EET = UTC+3) ---
 MANUAL_HOUR_START = 11
