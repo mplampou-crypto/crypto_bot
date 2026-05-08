@@ -80,6 +80,22 @@ async def init_db():
             )
         """)
 
+        # ─── MIGRATIONS (προσθήκη στηλών αν δεν υπάρχουν) ───
+        migrations = [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_expires_at TIMESTAMP",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_pending BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS paysafe_code TEXT",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS current_sl FLOAT",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS qty FLOAT",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS order_id TEXT",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS is_breakeven BOOLEAN DEFAULT FALSE",
+        ]
+        for migration in migrations:
+            try:
+                await conn.execute(migration)
+            except Exception as e:
+                print(f"Migration warning (ok): {e}")
+
         print("✅ Database initialized!")
     finally:
         await conn.close()
