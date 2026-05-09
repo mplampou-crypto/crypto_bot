@@ -18,30 +18,24 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # --- TRADING DEFAULTS ---
-DEFAULT_LEVERAGE  = 50       # 50x leverage
-DEFAULT_USDT      = 100      # 100€ margin
-DEFAULT_SL_PCT = 0.8   # -40€
-DEFAULT_TP_PCT = 0.2   # +10€
-MIN_SIGNAL_SCORE  = 79      # Ελάχιστο score για trade
+DEFAULT_LEVERAGE  = 50     # 50x leverage
+DEFAULT_USDT      = 50     # 50 USDT margin → position = 2500 USDT
+DEFAULT_SL_PCT    = 0.8    # -0.8% → ζημιά 20 USDT
+DEFAULT_TP_PCT    = 0.2    # +0.2% → κέρδος 5 USDT
+MIN_SIGNAL_SCORE  = 80
 
 # --- BREAK EVEN ---
-# Μόλις το trade κερδίσει X% της απόστασης TP → μεταφέρε SL στο entry
 BREAKEVEN_TRIGGER_PCT = 50   # Όταν φτάσει 50% του δρόμου προς TP
-TRAILING_STOP_ACTIVE  = True # Trailing stop μετά το break even
+TRAILING_STOP_ACTIVE  = True
 
-# --- MAX RISK MANAGEMENT ---
-MAX_DAILY_TRADES      = 15   # Μέγιστος αριθμός trades ανά μέρα
-MAX_CONSECUTIVE_LOSSES = 3   # Σταμάτα μετά από 3 consecutive losses
-POSITION_SIZE_PCT     = 100  # % του balance ανά trade (αν δεν οριστεί manual)
-
-# --- MANUAL APPROVAL WINDOW (EET = UTC+3) ---
-MANUAL_HOUR_START = 11
-MANUAL_HOUR_END   = 14
+# --- RISK MANAGEMENT ---
+MAX_DAILY_TRADES       = 5
+MAX_CONSECUTIVE_LOSSES = 3
 
 # --- SUBSCRIPTION ---
-SUBSCRIPTION_PRICE    = 25
-PAYSAFE_CODE_LENGTH   = 12
-SUBSCRIPTION_DAYS     = 30   # 1 μήνας
+SUBSCRIPTION_PRICE  = 25
+PAYSAFE_CODE_LENGTH = 12
+SUBSCRIPTION_DAYS   = 30
 
 # --- TRADING PAIRS ---
 TRADING_PAIRS = [
@@ -60,7 +54,6 @@ BEARISH_KEYWORDS = [
     "hack", "ban", "regulation", "lawsuit", "fear", "collapse",
     "liquidation", "scam", "fraud",
 ]
-
 NEWS_KEYWORDS = [
     "bitcoin", "ethereum", "crypto", "cryptocurrency",
     "solana", "ripple", "dogecoin", "binance", "bybit",
