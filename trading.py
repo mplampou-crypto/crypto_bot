@@ -15,11 +15,54 @@ from config import (
     BREAKEVEN_TRIGGER_PCT
 )
 
+# ─────────────────────────────────────────
+# BASE URL
+# ─────────────────────────────────────────
+
 BASE_URL = (
     "https://api-testnet.bybit.com"
     if BYBIT_TESTNET
     else "https://api.bybit.com"
 )
+
+# ─────────────────────────────────────────
+# SYMBOL FIXES
+# ─────────────────────────────────────────
+
+VALID_SYMBOLS = {
+    "BTC": "BTCUSDT",
+    "ETH": "ETHUSDT",
+    "SOL": "SOLUSDT",
+    "BNB": "BNBUSDT",
+    "XRP": "XRPUSDT",
+    "DOGE": "DOGEUSDT",
+}
+
+
+def normalize_symbol(symbol: str) -> str:
+
+    symbol = symbol.upper()
+
+    # TradingView cleanup
+    symbol = symbol.replace(".P", "")
+    symbol = symbol.replace("BINANCE:", "")
+    symbol = symbol.replace("BYBIT:", "")
+    symbol = symbol.replace("/", "")
+    symbol = symbol.replace("-", "")
+
+    # BTC → BTCUSDT
+    if symbol in VALID_SYMBOLS:
+        return VALID_SYMBOLS[symbol]
+
+    # BTCUSD → BTCUSDT
+    if symbol.endswith("USD") and not symbol.endswith("USDT"):
+        symbol += "T"
+
+    # BTCUSDT.P → BTCUSDT
+    if symbol.endswith("USDTUSDT"):
+        symbol = symbol.replace("USDTUSDT", "USDT")
+
+    return symbol
 
 
 # ─────────────────────────────────────────
@@ -154,6 +197,10 @@ async def _post(
 
 async def get_price(symbol: str) -> float:
 
+    symbol = normalize_symbol(symbol)
+
+    print(f"PRICE REQUEST SYMBOL: {symbol}")
+
     data = await _get(
         "/v5/market/tickers",
         {
@@ -161,8 +208,6 @@ async def get_price(symbol: str) -> float:
             "symbol": symbol
         }
     )
-
-    print(f"PRICE REQUEST SYMBOL: {symbol}")
 
     try:
 
@@ -186,6 +231,8 @@ async def set_leverage(
     symbol: str,
     leverage: int
 ) -> bool:
+
+    symbol = normalize_symbol(symbol)
 
     data = await _post(
         "/v5/position/set-leverage",
@@ -220,11 +267,7 @@ async def place_order(
     tp_pct: float
 ) -> dict:
 
-    # FIX SYMBOLS FROM TRADINGVIEW
-
-    symbol = symbol.replace(".P", "")
-    symbol = symbol.replace("BINANCE:", "")
-    symbol = symbol.upper()
+    symbol = normalize_symbol(symbol)
 
     print(f"Trading symbol after cleanup: {symbol}")
 
@@ -236,7 +279,7 @@ async def place_order(
 
         return {
             "success": False,
-            "error": "Δεν βρέθηκε τιμή"
+            "error": f"Δεν βρέθηκε τιμή για {symbol}"
         }
 
     # SET LEVERAGE
@@ -389,6 +432,8 @@ async def move_to_breakeven(
     qty: float
 ) -> bool:
 
+    symbol = normalize_symbol(symbol)
+
     new_sl = round(
         entry_price * (
             1.0005
@@ -421,6 +466,8 @@ async def set_stop_loss(
     symbol: str,
     new_sl: float
 ) -> bool:
+
+    symbol = normalize_symbol(symbol)
 
     data = await _post(
         "/v5/position/trading-stop",
@@ -583,7 +630,7 @@ def format_rejected_message(
         else "🔴 SHORT"
     )
 
-    coin = symbol.replace("USDT", "")
+    coin = normalize_symbol(symbol).replace("USDT", "")
 
     return (
         f"🚫 <b>Signal Rejected</b>\n\n"
@@ -604,7 +651,7 @@ def format_breakeven_message(
     entry: float
 ) -> str:
 
-    coin = symbol.replace("USDT", "")
+    coin = normalize_symbol(symbol).replace("USDT", "")
 
     return (
         f"🔒 <b>Break Even Ενεργοποιήθηκε!</b>\n\n"
@@ -629,7 +676,9 @@ def format_pending_trade_message(
         else "🔴 SHORT"
     )
 
-    coin = pending["symbol"].replace("USDT", "")
+    coin = normalize_symbol(
+        pending["symbol"]
+    ).replace("USDT", "")
 
     msg = (
         f"⏰ <b>Signal — Απαιτείται Έγκριση!</b>\n\n"
