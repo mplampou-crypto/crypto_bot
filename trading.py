@@ -1,8 +1,3 @@
-```python
-# ─────────────────────────────────────────
-# IMPORTS
-# ─────────────────────────────────────────
-
 import hmac
 import hashlib
 import time
@@ -67,32 +62,31 @@ def normalize_symbol(symbol: str) -> str:
 
 
 # ─────────────────────────────────────────
-# HEADERS / SIGNATURE
+# SIGNATURE
 # ─────────────────────────────────────────
 
 def _make_headers(sign_payload: str) -> dict:
 
-    ts = str(int(time.time() * 1000))
-
+    timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
 
-    full_str = (
-        ts
+    param_str = (
+        timestamp
         + BYBIT_API_KEY
         + recv_window
         + sign_payload
     )
 
     signature = hmac.new(
-        BYBIT_API_SECRET.encode("utf-8"),
-        full_str.encode("utf-8"),
+        BYBIT_API_SECRET.encode(),
+        param_str.encode(),
         hashlib.sha256
     ).hexdigest()
 
     return {
         "Content-Type": "application/json",
         "X-BAPI-API-KEY": BYBIT_API_KEY,
-        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-TIMESTAMP": timestamp,
         "X-BAPI-RECV-WINDOW": recv_window,
         "X-BAPI-SIGN": signature,
     }
@@ -110,54 +104,47 @@ async def _get(
 
     params = params or {}
 
-    query_str = "&".join(
+    query_string = "&".join(
         f"{k}={v}"
         for k, v in sorted(params.items())
     )
 
     headers = (
-        _make_headers(query_str)
+        _make_headers(query_string)
         if signed
-        else {
-            "Content-Type": "application/json"
-        }
+        else {"Content-Type": "application/json"}
     )
 
     url = f"{BASE_URL}{endpoint}"
 
-    async with httpx.AsyncClient() as client:
+    try:
 
-        try:
+        async with httpx.AsyncClient(timeout=20) as client:
 
-            resp = await client.get(
+            response = await client.get(
                 url,
                 params=params,
-                headers=headers,
-                timeout=10
+                headers=headers
             )
 
-            print("========== BYBIT GET ==========")
-            print("URL:", url)
-            print("Params:", params)
-            print("Status:", resp.status_code)
-            print("Response:", resp.text)
-            print("================================")
+            print("GET STATUS:", response.status_code)
+            print("GET RESPONSE:", response.text)
 
-            return resp.json()
+            return response.json()
 
-        except Exception as e:
+    except Exception as e:
 
-            import traceback
+        import traceback
 
-            print("========== BYBIT GET ERROR ==========")
-            print(str(e))
-            traceback.print_exc()
-            print("=====================================")
+        print("========== GET ERROR ==========")
+        print(str(e))
+        traceback.print_exc()
+        print("================================")
 
-            return {
-                "retCode": -1,
-                "retMsg": str(e)
-            }
+        return {
+            "retCode": -1,
+            "retMsg": str(e)
+        }
 
 
 # ─────────────────────────────────────────
@@ -172,54 +159,47 @@ async def _post(
 
     params = params or {}
 
-    body_str = json.dumps(
+    body = json.dumps(
         params,
-        separators=(',', ':')
+        separators=(",", ":")
     )
 
     headers = (
-        _make_headers(body_str)
+        _make_headers(body)
         if signed
-        else {
-            "Content-Type": "application/json"
-        }
+        else {"Content-Type": "application/json"}
     )
 
     url = f"{BASE_URL}{endpoint}"
 
-    async with httpx.AsyncClient() as client:
+    try:
 
-        try:
+        async with httpx.AsyncClient(timeout=20) as client:
 
-            resp = await client.post(
+            response = await client.post(
                 url,
-                content=body_str,
-                headers=headers,
-                timeout=10
+                content=body,
+                headers=headers
             )
 
-            print("========== BYBIT POST ==========")
-            print("URL:", url)
-            print("BODY:", body_str)
-            print("Status:", resp.status_code)
-            print("Response:", resp.text)
-            print("================================")
+            print("POST STATUS:", response.status_code)
+            print("POST RESPONSE:", response.text)
 
-            return resp.json()
+            return response.json()
 
-        except Exception as e:
+    except Exception as e:
 
-            import traceback
+        import traceback
 
-            print("========== BYBIT POST ERROR ==========")
-            print(str(e))
-            traceback.print_exc()
-            print("======================================")
+        print("========== POST ERROR ==========")
+        print(str(e))
+        traceback.print_exc()
+        print("================================")
 
-            return {
-                "retCode": -1,
-                "retMsg": str(e)
-            }
+        return {
+            "retCode": -1,
+            "retMsg": str(e)
+        }
 
 
 # ─────────────────────────────────────────
@@ -229,8 +209,6 @@ async def _post(
 async def get_price(symbol: str) -> float:
 
     symbol = normalize_symbol(symbol)
-
-    print(f"PRICE REQUEST SYMBOL: {symbol}")
 
     data = await _get(
         "/v5/market/tickers",
@@ -248,7 +226,7 @@ async def get_price(symbol: str) -> float:
 
     except Exception as e:
 
-        print(f"Price error for {symbol}: {e}")
+        print(f"Price error: {e}")
         print(data)
 
         return 0.0
@@ -271,16 +249,15 @@ async def set_leverage(
             "category": "linear",
             "symbol": symbol,
             "buyLeverage": str(leverage),
-            "sellLeverage": str(leverage),
+            "sellLeverage": str(leverage)
         },
         signed=True
     )
 
+    print("SET LEVERAGE:", data)
+
     if data and data.get("retCode") in [0, 110043]:
-
         return True
-
-    print(f"Set leverage error: {data}")
 
     return False
 
@@ -300,7 +277,7 @@ async def place_order(
 
     symbol = normalize_symbol(symbol)
 
-    print(f"Trading symbol after cleanup: {symbol}")
+    print(f"ORDER SYMBOL: {symbol}")
 
     current_price = await get_price(symbol)
 
@@ -308,7 +285,7 @@ async def place_order(
 
         return {
             "success": False,
-            "error": f"Δεν βρέθηκε τιμή για {symbol}"
+            "error": f"No price for {symbol}"
         }
 
     await set_leverage(symbol, leverage)
@@ -321,9 +298,10 @@ async def place_order(
     )
 
     if qty <= 0:
+
         return {
             "success": False,
-            "error": "Invalid quantity"
+            "error": "Invalid qty"
         }
 
     # LONG
@@ -337,14 +315,6 @@ async def place_order(
 
         tp_price = round(
             current_price * (1 + tp_pct / 100),
-            4
-        )
-
-        be_trigger = round(
-            current_price + (
-                (tp_price - current_price)
-                * BREAKEVEN_TRIGGER_PCT / 100
-            ),
             4
         )
 
@@ -362,13 +332,15 @@ async def place_order(
             4
         )
 
-        be_trigger = round(
-            current_price - (
-                (current_price - tp_price)
-                * BREAKEVEN_TRIGGER_PCT / 100
-            ),
-            4
-        )
+    be_trigger = round(
+        current_price + (
+            (tp_price - current_price)
+            * BREAKEVEN_TRIGGER_PCT / 100
+        ),
+        4
+    )
+
+    # MARKET ORDER
 
     data = await _post(
         "/v5/order/create",
@@ -377,17 +349,11 @@ async def place_order(
             "symbol": symbol,
             "side": side,
             "orderType": "Market",
-
             "qty": str(qty),
-
-            "stopLoss": str(sl_price),
             "takeProfit": str(tp_price),
-
-            "reduceOnly": False,
-            "closeOnTrigger": False,
-
-            "slTriggerBy": "LastPrice",
-            "tpTriggerBy": "LastPrice"
+            "stopLoss": str(sl_price),
+            "tpTriggerBy": "LastPrice",
+            "slTriggerBy": "LastPrice"
         },
         signed=True
     )
@@ -422,13 +388,231 @@ async def place_order(
             "expected_sl_loss": pnl_sl,
         }
 
+    return {
+        "success": False,
+        "error": data.get("retMsg", "Unknown error")
+        if data else "No response"
+    }
+
+
+# ─────────────────────────────────────────
+# MOVE TO BREAKEVEN
+# ─────────────────────────────────────────
+
+async def move_to_breakeven(
+    symbol: str,
+    side: str,
+    entry_price: float,
+    qty: float
+) -> bool:
+
+    symbol = normalize_symbol(symbol)
+
+    new_sl = round(entry_price, 4)
+
+    data = await _post(
+        "/v5/position/trading-stop",
+        {
+            "category": "linear",
+            "symbol": symbol,
+            "stopLoss": str(new_sl),
+            "slTriggerBy": "LastPrice",
+            "tpslMode": "Full"
+        },
+        signed=True
+    )
+
+    return data and data.get("retCode") == 0
+
+
+# ─────────────────────────────────────────
+# SET STOP LOSS
+# ─────────────────────────────────────────
+
+async def set_stop_loss(
+    symbol: str,
+    new_sl: float
+) -> bool:
+
+    symbol = normalize_symbol(symbol)
+
+    data = await _post(
+        "/v5/position/trading-stop",
+        {
+            "category": "linear",
+            "symbol": symbol,
+            "stopLoss": str(new_sl),
+            "slTriggerBy": "LastPrice",
+            "tpslMode": "Full"
+        },
+        signed=True
+    )
+
+    return data and data.get("retCode") == 0
+
+
+# ─────────────────────────────────────────
+# TRAILING STOP
+# ─────────────────────────────────────────
+
+async def update_trailing_stop(
+    symbol: str,
+    side: str,
+    current_price: float,
+    entry_price: float,
+    tp_price: float
+):
+
+    if side == "Buy":
+
+        trail_dist = (
+            tp_price - entry_price
+        ) * 0.3
+
+        new_sl = round(
+            current_price - trail_dist,
+            4
+        )
+
+        return (
+            new_sl
+            if new_sl > entry_price
+            else None
+        )
+
     else:
 
-        print(f"Bybit order error: {data}")
+        trail_dist = (
+            entry_price - tp_price
+        ) * 0.3
 
-        return {
-            "success": False,
-            "error": data.get("retMsg", "No response")
-            if data else "No response"
-        }
-```
+        new_sl = round(
+            current_price + trail_dist,
+            4
+        )
+
+        return (
+            new_sl
+            if new_sl < entry_price
+            else None
+        )
+
+
+# ─────────────────────────────────────────
+# WALLET BALANCE
+# ─────────────────────────────────────────
+
+async def get_wallet_balance() -> float:
+
+    data = await _get(
+        "/v5/account/wallet-balance",
+        {
+            "accountType": "UNIFIED",
+            "coin": "USDT"
+        },
+        signed=True
+    )
+
+    try:
+
+        return float(
+            data["result"]["list"][0]["coin"][0]["walletBalance"]
+        )
+
+    except Exception as e:
+
+        print("BALANCE ERROR:", e)
+        print(data)
+
+        return 0.0
+
+
+# ─────────────────────────────────────────
+# OPEN POSITIONS
+# ─────────────────────────────────────────
+
+async def get_open_positions() -> list:
+
+    data = await _get(
+        "/v5/position/list",
+        {
+            "category": "linear",
+            "settleCoin": "USDT"
+        },
+        signed=True
+    )
+
+    try:
+
+        return [
+            p for p in data["result"]["list"]
+            if float(p.get("size", 0)) > 0
+        ]
+
+    except Exception as e:
+
+        print("POSITIONS ERROR:", e)
+        print(data)
+
+        return []
+
+
+# ─────────────────────────────────────────
+# MESSAGES
+# ─────────────────────────────────────────
+
+def format_trade_message(trade: dict) -> str:
+
+    side_emoji = (
+        "🟢 LONG"
+        if trade["side"] == "Buy"
+        else "🔴 SHORT"
+    )
+
+    coin = trade["symbol"].replace("USDT", "")
+
+    return (
+        f"⚡️ <b>Νέο Trade!</b>\n\n"
+        f"Pair: <b>{coin}/USDT</b>\n"
+        f"Κατεύθυνση: <b>{side_emoji}</b>\n"
+        f"Entry: <b>${trade['entry_price']:,.4f}</b>\n"
+        f"SL: <b>${trade['sl_price']:,.4f}</b>\n"
+        f"TP: <b>${trade['tp_price']:,.4f}</b>\n"
+        f"Leverage: <b>{trade['leverage']}x</b>\n"
+        f"Margin: <b>{trade['usdt_amount']} USDT</b>\n\n"
+        f"💰 TP Profit: <b>+{trade['expected_tp_pnl']} USDT</b>\n"
+        f"⛔ SL Loss: <b>-{trade['expected_sl_loss']} USDT</b>"
+    )
+
+
+def format_rejected_message(
+    symbol: str,
+    side: str,
+    score: int,
+    reason: str
+) -> str:
+
+    coin = normalize_symbol(symbol).replace("USDT", "")
+
+    return (
+        f"🚫 <b>Signal Rejected</b>\n\n"
+        f"Pair: <b>{coin}/USDT</b>\n"
+        f"Side: <b>{side}</b>\n"
+        f"Score: <b>{score}/100</b>\n"
+        f"Reason: <i>{reason}</i>"
+    )
+
+
+def format_breakeven_message(
+    symbol: str,
+    side: str,
+    entry: float
+) -> str:
+
+    coin = normalize_symbol(symbol).replace("USDT", "")
+
+    return (
+        f"🔒 <b>Break Even Activated!</b>\n\n"
+        f"Pair: <b>{coin}/USDT</b>\n"
+        f"New SL: <b>${entry:,.4f}</b>"
+    )
