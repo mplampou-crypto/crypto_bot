@@ -19,7 +19,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 # --- TRADING DEFAULTS ---
 DEFAULT_LEVERAGE  = 50     # 50x leverage
-DEFAULT_USDT      = 50     # 50 USDT margin → position = 2500 USDT
+DEFAULT_USDT      = 30     # 30 USDT margin → position = 1500 USDT
 DEFAULT_SL_PCT    = 0.8    # -0.8% → ζημιά 20 USDT
 DEFAULT_TP_PCT    = 0.2    # +0.2% → κέρδος 5 USDT
 MIN_SIGNAL_SCORE  = 80
