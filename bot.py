@@ -476,12 +476,20 @@ async def handle_tradingview_webhook(symbol: str, side: str, score: int,
         await broadcast(application, msg)
         logger.info(f"Trade opened: {symbol} {side_bybit} score={score}")
     else:
+
+        error_msg = result.get("error", "Unknown error")
+
+        logger.error(f"TRADE FAILED FULL RESPONSE: {result}")
+
         await application.bot.send_message(
             ADMIN_CHAT_ID,
-            f"❌ <b>Trade failed:</b> {result.get('error')}",
+            f"❌ <b>Trade failed</b>\n\n"
+            f"Symbol: <b>{symbol}</b>\n"
+            f"Side: <b>{side_bybit}</b>\n"
+            f"Error: <code>{error_msg}</code>\n\n"
+            f"Full Response:\n<code>{str(result)}</code>",
             parse_mode=ParseMode.HTML
         )
-
 
 # ─── ADMIN PANEL ──────────────────────────────────────────
 
