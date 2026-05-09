@@ -10,7 +10,8 @@ ADMIN_CHAT_ID      = int(os.getenv("ADMIN_CHAT_ID", "0"))
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 BYBIT_TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
-
+BYBIT_API_KEY = BYBIT_API_KEY.strip()
+BYBIT_API_SECRET = BYBIT_API_SECRET.strip()
 # --- NEWS ---
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 
