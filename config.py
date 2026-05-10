@@ -10,8 +10,7 @@ ADMIN_CHAT_ID      = int(os.getenv("ADMIN_CHAT_ID", "0"))
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 BYBIT_TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
-BYBIT_API_KEY = BYBIT_API_KEY.strip()
-BYBIT_API_SECRET = BYBIT_API_SECRET.strip()
+
 # --- NEWS ---
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 
@@ -19,14 +18,19 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # --- TRADING DEFAULTS ---
-DEFAULT_LEVERAGE  = 50     # 50x leverage
-DEFAULT_USDT      = 30     # 30 USDT margin → position = 1500 USDT
-DEFAULT_SL_PCT    = 0.8    # -0.8% → ζημιά 20 USDT
-DEFAULT_TP_PCT    = 0.2    # +0.2% → κέρδος 5 USDT
+# 100 USDT × 50x = 5,000 USDT position
+# TP +1.0% → +50 USDT κέρδος
+# SL -0.5% → -25 USDT ζημιά
+# RR 1:2 → χρειάζεσαι μόνο 35% winrate για κέρδος
+DEFAULT_LEVERAGE  = 50
+DEFAULT_USDT      = 100
+DEFAULT_SL_PCT    = 0.5    # -25 USDT
+DEFAULT_TP_PCT    = 1.0    # +50 USDT
+
 MIN_SIGNAL_SCORE  = 80
 
 # --- BREAK EVEN ---
-BREAKEVEN_TRIGGER_PCT = 50   # Όταν φτάσει 50% του δρόμου προς TP
+BREAKEVEN_TRIGGER_PCT = 50
 TRAILING_STOP_ACTIVE  = True
 
 # --- RISK MANAGEMENT ---
