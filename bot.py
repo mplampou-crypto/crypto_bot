@@ -541,23 +541,39 @@ from aiohttp import web
 
 async def tradingview_handler(request: web.Request):
     try:
-        data   = await request.json()
+        data = await request.json()
+
         symbol = data.get("symbol", "BTCUSDT").upper()
-        side   = data.get("side", "LONG").upper()
-        score  = int(data.get("score", 0))
-        app    = request.app["telegram_app"]
+
+        # FIX για διπλό USDT
+        symbol = symbol.replace("USDTUSDT", "USDT")
+
+        if not symbol.endswith("USDT"):
+            symbol += "USDT"
+
+        print("WEBHOOK SYMBOL:", symbol)
+
+        side  = data.get("side", "LONG").upper()
+        score = int(data.get("score", 0))
+
+        app = request.app["telegram_app"]
+
         asyncio.create_task(
-            handle_tradingview_webhook(symbol, side, score, app))
+            handle_tradingview_webhook(symbol, side, score, app)
+        )
+
         return web.json_response({"status": "ok"})
+
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        return web.json_response({"status": "error", "msg": str(e)}, status=400)
+        return web.json_response(
+            {"status": "error", "msg": str(e)},
+            status=400
+        )
 
 
 async def health_handler(request: web.Request):
     return web.json_response({"status": "running"})
-
-
 # ─── MAIN ─────────────────────────────────────────────────
 
 async def main():
