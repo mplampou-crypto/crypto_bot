@@ -346,21 +346,8 @@ async def handle_tradingview_webhook(symbol: str, side: str, score: int,
         )
         return
 
-    # 2. Έλεγχος αν υπάρχει ήδη ανοιχτό trade για αυτό το symbol
-    open_symbols = await get_open_symbols()
-    if symbol in open_symbols:
-        reason = f"Υπάρχει ήδη ανοιχτό trade για {symbol}"
-        await save_rejected_signal(symbol, side, score, reason)
-        await application.bot.send_message(
-            ADMIN_CHAT_ID,
-            f"⏸ <b>Signal παραλείφθηκε</b>\n\n"
-            f"Pair: <b>{symbol.replace('USDT','')}/USDT</b>\n"
-            f"Λόγος: <i>{reason}</i>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    # 3. Ημερήσιο όριο
+    
+    # 2. Ημερήσιο όριο
     today_count = await get_today_trades_count()
     if today_count >= MAX_DAILY_TRADES:
         reason = f"Ημερήσιο όριο {MAX_DAILY_TRADES} trades"
@@ -372,7 +359,7 @@ async def handle_tradingview_webhook(symbol: str, side: str, score: int,
         )
         return
 
-    # 4. Consecutive losses
+    # 3. Consecutive losses
     consec = await get_consecutive_losses()
     if consec >= MAX_CONSECUTIVE_LOSSES:
         reason = f"{consec} consecutive losses — bot σε παύση"
@@ -384,7 +371,7 @@ async def handle_tradingview_webhook(symbol: str, side: str, score: int,
         )
         return
 
-    # 5. Sentiment check
+    # 4. Sentiment check
     sentiment_data = await get_market_sentiment(symbol)
     side_bybit     = "Buy" if side.upper() == "LONG" else "Sell"
 
@@ -404,7 +391,7 @@ async def handle_tradingview_webhook(symbol: str, side: str, score: int,
         await broadcast(application, msg)
         return
 
-    # 6. ✅ Εκτέλεση trade
+    # 5. ✅ Εκτέλεση trade
     result = await place_order(
         symbol, side_bybit, DEFAULT_USDT,
         DEFAULT_LEVERAGE, DEFAULT_SL_PCT, DEFAULT_TP_PCT
