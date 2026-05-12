@@ -13,7 +13,6 @@ BASE_URL = "https://api-testnet.bybit.com" if BYBIT_TESTNET else "https://api.by
 
 _qty_step_cache: dict = {}
 
-# Γνωστά steps για τα βασικά pairs (fallback αν δεν απαντήσει το API)
 KNOWN_QTY_STEPS = {
     "BTCUSDT":  0.001,
     "ETHUSDT":  0.01,
@@ -52,16 +51,8 @@ async def _get(endpoint: str, params: dict = None, signed: bool = False):
             resp = await client.get(url, params=params, headers=headers, timeout=10)
             return resp.json()
         except Exception as e:
-            print("========== BYBIT GET ERROR ==========")
-            print("URL:", url)
-            print("BODY:", body_str)
-            print("ERROR:", str(e))
-            print("======================================")
-
-        return {
-            "retCode": -1,
-            "retMsg": str(e)
-         }
+            print(f"Bybit GET error: {e}")
+            return None
 
 
 async def _post(endpoint: str, params: dict = None, signed: bool = False):
@@ -79,11 +70,8 @@ async def _post(endpoint: str, params: dict = None, signed: bool = False):
 
 
 async def get_qty_step(symbol: str) -> float:
-    """Παίρνει το minimum qty step για ένα symbol"""
     if symbol in _qty_step_cache:
         return _qty_step_cache[symbol]
-
-    # Πρώτα δοκίμασε από το API
     data = await _get("/v5/market/instruments-info",
                       {"category": "linear", "symbol": symbol})
     try:
@@ -91,22 +79,13 @@ async def get_qty_step(symbol: str) -> float:
         _qty_step_cache[symbol] = step
         return step
     except:
-        pass
-
-    # Fallback στα γνωστά steps
-    step = KNOWN_QTY_STEPS.get(symbol, 0.001)
-    _qty_step_cache[symbol] = step
-    return step
+        step = KNOWN_QTY_STEPS.get(symbol, 0.001)
+        _qty_step_cache[symbol] = step
+        return step
 
 
 def round_qty(qty: float, step: float) -> float:
-    """
-    Στρογγυλοποιεί το qty προς τα ΚΑΤΩ στο σωστό step.
-    Π.χ. qty=1.041, step=0.01 → 1.04
-         qty=0.0312, step=0.001 → 0.031
-    """
     qty_rounded = math.floor(qty / step) * step
-    # Βρες πόσα decimals χρειάζεται
     if step >= 1:
         return int(qty_rounded)
     decimals = len(str(step).rstrip('0').split('.')[-1])
@@ -136,48 +115,66 @@ async def set_leverage(symbol: str, leverage: int) -> bool:
 
 
 async def place_order(symbol: str, side: str, usdt_amount: float,
-                      leverage: int, sl_pct: float, tp_pct: float) -> dict:
-    # 1. Παίρνουμε τιμή
+                      leverage: int, sl_pct: float, tp_pct: float,
+                      tp_price: float = None, sl_price: float = None) -> dict:
+    """
+    Ανοίγει trade. Αν δοθούν tp_price/sl_price (από indicator),
+    τα χρησιμοποιεί αντί για fixed %.
+    """
     current_price = await get_price(symbol)
     if current_price == 0:
         return {"success": False, "error": "Δεν βρέθηκε τιμή"}
 
-    # 2. Set leverage
     await set_leverage(symbol, leverage)
 
-    # 3. Υπολογισμός qty με σωστό step
     position_value = usdt_amount * leverage
-    raw_qty        = position_value / current_price
-    step           = await get_qty_step(symbol)
-    qty            = round_qty(raw_qty, step)
+    step = await get_qty_step(symbol)
+    qty  = round_qty(position_value / current_price, step)
 
-    print(f"[Order] {symbol} {side} | price={current_price} | "
-          f"raw_qty={raw_qty:.6f} | step={step} | qty={qty}")
+    print(f"[Order] {symbol} {side} | price={current_price} | qty={qty} | step={step}")
 
     if qty <= 0:
         return {"success": False,
-                "error": f"Qty πολύ μικρό ({qty}) για {symbol}. "
-                         f"Αύξησε το margin ή το leverage."}
+                "error": f"Qty πολύ μικρό για {symbol}. Αύξησε το margin."}
 
-    # 4. SL / TP
-    if side == "Buy":
-        sl_price   = round(current_price * (1 - sl_pct / 100), 4)
-        tp_price   = round(current_price * (1 + tp_pct / 100), 4)
-        be_trigger = round(current_price + (tp_price - current_price) * 0.5, 4)
+    # Χρησιμοποίησε dynamic τιμές αν δόθηκαν, αλλιώς fixed %
+    if sl_price and tp_price and sl_price > 0 and tp_price > 0:
+        final_sl = round(float(sl_price), 4)
+        final_tp = round(float(tp_price), 4)
+        # Βεβαιώσου ότι είναι σωστή κατεύθυνση
+        if side == "Buy" and (final_sl >= current_price or final_tp <= current_price):
+            final_sl = round(current_price * (1 - sl_pct / 100), 4)
+            final_tp = round(current_price * (1 + tp_pct / 100), 4)
+        elif side == "Sell" and (final_sl <= current_price or final_tp >= current_price):
+            final_sl = round(current_price * (1 + sl_pct / 100), 4)
+            final_tp = round(current_price * (1 - tp_pct / 100), 4)
     else:
-        sl_price   = round(current_price * (1 + sl_pct / 100), 4)
-        tp_price   = round(current_price * (1 - tp_pct / 100), 4)
-        be_trigger = round(current_price - (current_price - tp_price) * 0.5, 4)
+        if side == "Buy":
+            final_sl = round(current_price * (1 - sl_pct / 100), 4)
+            final_tp = round(current_price * (1 + tp_pct / 100), 4)
+        else:
+            final_sl = round(current_price * (1 + sl_pct / 100), 4)
+            final_tp = round(current_price * (1 - tp_pct / 100), 4)
 
-    # 5. Place order
+    # PnL εκτίμηση
+    if side == "Buy":
+        tp_pct_actual = (final_tp - current_price) / current_price * 100
+        sl_pct_actual = (current_price - final_sl) / current_price * 100
+    else:
+        tp_pct_actual = (current_price - final_tp) / current_price * 100
+        sl_pct_actual = (final_sl - current_price) / current_price * 100
+
+    pnl_tp = round(position_value * tp_pct_actual / 100, 2)
+    pnl_sl = round(position_value * sl_pct_actual / 100, 2)
+
     data = await _post("/v5/order/create", {
         "category":      "linear",
         "symbol":        symbol,
         "side":          side,
         "orderType":     "Market",
         "qty":           str(qty),
-        "stopLoss":      str(sl_price),
-        "takeProfit":    str(tp_price),
+        "stopLoss":      str(final_sl),
+        "takeProfit":    str(final_tp),
         "timeInForce":   "GoodTillCancel",
         "reduceOnly":    False,
         "closeOnTrigger": False,
@@ -186,17 +183,14 @@ async def place_order(symbol: str, side: str, usdt_amount: float,
     }, signed=True)
 
     if data and data.get("retCode") == 0:
-        pnl_tp = round(position_value * tp_pct / 100, 2)
-        pnl_sl = round(position_value * sl_pct / 100, 2)
         return {
             "success":          True,
             "order_id":         data["result"]["orderId"],
             "symbol":           symbol,
             "side":             side,
             "entry_price":      current_price,
-            "sl_price":         sl_price,
-            "tp_price":         tp_price,
-            "be_trigger":       be_trigger,
+            "sl_price":         final_sl,
+            "tp_price":         final_tp,
             "qty":              qty,
             "leverage":         leverage,
             "usdt_amount":      usdt_amount,
@@ -204,44 +198,8 @@ async def place_order(symbol: str, side: str, usdt_amount: float,
             "expected_sl_loss": pnl_sl,
         }
     else:
-        error_msg = data.get("retMsg", "Unknown") if data else "No response"
-        return {"success": False, "error": error_msg}
-
-
-async def move_to_breakeven(symbol: str, side: str,
-                             entry_price: float, qty: float) -> bool:
-    new_sl = round(entry_price * (1.0005 if side == "Buy" else 0.9995), 4)
-    data = await _post("/v5/position/trading-stop", {
-        "category":    "linear",
-        "symbol":      symbol,
-        "stopLoss":    str(new_sl),
-        "slTriggerBy": "LastPrice",
-        "tpslMode":    "Full",
-    }, signed=True)
-    return data and data.get("retCode") == 0
-
-
-async def set_stop_loss(symbol: str, new_sl: float) -> bool:
-    data = await _post("/v5/position/trading-stop", {
-        "category":    "linear",
-        "symbol":      symbol,
-        "stopLoss":    str(new_sl),
-        "slTriggerBy": "LastPrice",
-        "tpslMode":    "Full",
-    }, signed=True)
-    return data and data.get("retCode") == 0
-
-
-async def update_trailing_stop(symbol: str, side: str, current_price: float,
-                                entry_price: float, tp_price: float):
-    if side == "Buy":
-        trail_dist = (tp_price - entry_price) * 0.3
-        new_sl     = round(current_price - trail_dist, 4)
-        return new_sl if new_sl > entry_price else None
-    else:
-        trail_dist = (entry_price - tp_price) * 0.3
-        new_sl     = round(current_price + trail_dist, 4)
-        return new_sl if new_sl < entry_price else None
+        return {"success": False,
+                "error": data.get("retMsg", "Unknown") if data else "No response"}
 
 
 async def get_wallet_balance() -> float:
@@ -254,6 +212,7 @@ async def get_wallet_balance() -> float:
 
 
 async def get_open_positions() -> list:
+    """Παίρνει ανοιχτές θέσεις από το Bybit"""
     data = await _get("/v5/position/list",
                       {"category": "linear", "settleCoin": "USDT"}, signed=True)
     try:
@@ -261,6 +220,37 @@ async def get_open_positions() -> list:
                 if float(p.get("size", 0)) > 0]
     except:
         return []
+
+
+async def get_closed_pnl(limit: int = 20) -> list:
+    """
+    Παίρνει τα πρόσφατα κλειστά trades από το Bybit με το PnL τους.
+    Χρησιμοποιείται για να ενημερώσουμε τη database.
+    """
+    data = await _get("/v5/position/closed-pnl", {
+        "category": "linear",
+        "limit": str(limit),
+    }, signed=True)
+    try:
+        return data["result"]["list"]
+    except:
+        return []
+
+
+async def is_position_open(symbol: str) -> bool:
+    """Ελέγχει αν υπάρχει ανοιχτή θέση για ένα symbol στο Bybit"""
+    data = await _get("/v5/position/list", {
+        "category": "linear",
+        "symbol": symbol,
+    }, signed=True)
+    try:
+        positions = data["result"]["list"]
+        for p in positions:
+            if float(p.get("size", 0)) > 0:
+                return True
+        return False
+    except:
+        return True  # assume open αν δεν μπορούμε να ελέγξουμε
 
 
 def format_trade_message(trade: dict) -> str:
@@ -271,13 +261,12 @@ def format_trade_message(trade: dict) -> str:
         f"Pair: <b>{coin}/USDT</b>\n"
         f"Κατεύθυνση: <b>{side_emoji}</b>\n"
         f"Entry: <b>${trade['entry_price']:,.4f}</b>\n"
-        f"Stop Loss: <b>${trade['sl_price']:,.4f}</b> (-{DEFAULT_SL_PCT}%)\n"
-        f"Take Profit: <b>${trade['tp_price']:,.4f}</b> (+{DEFAULT_TP_PCT}%)\n"
-        f"🔒 Break-Even at: <b>${trade['be_trigger']:,.4f}</b>\n"
+        f"Stop Loss: <b>${trade['sl_price']:,.4f}</b>\n"
+        f"Take Profit: <b>${trade['tp_price']:,.4f}</b>\n"
         f"Leverage: <b>{trade['leverage']}x</b>\n"
         f"Margin: <b>{trade['usdt_amount']} USDT</b>\n\n"
-        f"💰 TP: <b>+{trade['expected_tp_pnl']:.1f} USDT</b>  "
-        f"⛔ SL: <b>-{trade['expected_sl_loss']:.1f} USDT</b>"
+        f"💰 Expected TP: <b>+{trade['expected_tp_pnl']:.1f} USDT</b>\n"
+        f"⛔ Max Loss: <b>-{trade['expected_sl_loss']:.1f} USDT</b>"
     )
 
 
@@ -294,11 +283,16 @@ def format_rejected_message(symbol: str, side: str,
     )
 
 
-def format_breakeven_message(symbol: str, side: str, entry: float) -> str:
-    coin = symbol.replace("USDT", "")
+def format_closed_trade_message(symbol: str, side: str,
+                                  pnl: float, result: str) -> str:
+    coin      = symbol.replace("USDT", "")
+    emoji     = "✅" if result == "WIN" else "❌"
+    side_txt  = "LONG" if side == "Buy" else "SHORT"
+    sign      = "+" if pnl >= 0 else ""
     return (
-        f"🔒 <b>Break Even!</b>\n\n"
+        f"{emoji} <b>Trade Έκλεισε — {result}</b>\n\n"
         f"Pair: <b>{coin}/USDT</b>\n"
-        f"SL → entry: <b>${entry:,.4f}</b>\n"
-        f"Αδύνατο να κλείσει με ζημιά! ✅"
+        f"Κατεύθυνση: <b>{side_txt}</b>\n"
+        f"PnL: <b>{sign}{pnl:.2f} USDT</b>"
     )
+
