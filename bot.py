@@ -520,13 +520,55 @@ async def handle_tradingview_webhook(symbol: str, side: str, score: int,
  
  
 # ─── ADMIN PANEL ──────────────────────────────────────────
- 
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Χρήση: /approve 123456789"""
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("Χρήση: /approve <chat_id>")
+        return
+    try:
+        user_id = int(context.args[0])
+        await approve_subscription(user_id)
+        await update.message.reply_text(f"✅ Εγκρίθηκε ο χρήστης {user_id}")
+        await context.bot.send_message(
+            user_id,
+            f"🎉 <b>Συνδρομή Ενεργοποιήθηκε!</b>\n\n"
+            f"✅ {SUBSCRIPTION_DAYS} μέρες ενεργή!\n"
+            f"Πάτα /start για να ξεκινήσεις.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Χρήση: /reject 123456789"""
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("Χρήση: /reject <chat_id>")
+        return
+    try:
+        user_id = int(context.args[0])
+        await context.bot.send_message(
+            user_id,
+            "❌ <b>Ο κωδικός απορρίφθηκε.</b>\n\n"
+            "Βεβαιώσου ότι ο κωδικός είναι σωστός και δοκίμασε ξανά.",
+            parse_mode=ParseMode.HTML
+        )
+        await update.message.reply_text(f"❌ Απορρίφθηκε ο χρήστης {user_id}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats   = await get_stats()
     balance = await get_wallet_balance()
     pending = await get_pending_subscriptions()
     open_t  = await get_open_trades()
- 
+
     msg = (
         f"👑 <b>Admin Panel</b>\n\n"
         f"💰 Wallet: <b>{balance:,.2f} USDT</b>\n"
@@ -537,7 +579,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📅 Σήμερα: {stats['today_trades']} trades\n"
         f"📌 Ανοιχτά: {len(open_t)}\n"
         f"⚠️ Consec. losses: {stats['consecutive_losses']}/{MAX_CONSECUTIVE_LOSSES}\n"
-        f"⏳ Pending subs: {len(pending)}\n"
+        f"⏳ Pending subs: {len(pending)}\n\n"
+        f"<b>Εντολές:</b>\n"
+        f"/approve &lt;chat_id&gt; — Έγκριση συνδρομής\n"
+        f"/reject &lt;chat_id&gt; — Απόρριψη συνδρομής"
     )
     await update.message.reply_text(
         msg, parse_mode=ParseMode.HTML,
@@ -546,8 +591,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📈 Positions",    callback_data="admin_positions"),
         ]])
     )
- 
- 
+
+
 async def admin_pending_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if update.effective_chat.id != ADMIN_CHAT_ID:
@@ -561,7 +606,10 @@ async def admin_pending_callback(update: Update, context: ContextTypes.DEFAULT_T
     for sub in subs:
         await query.message.reply_text(
             f"👤 @{sub['username']} (ID: {sub['chat_id']})\n"
-            f"💳 Code: <code>{sub['paysafe_code']}</code>",
+            f"💳 Code: <code>{sub['paysafe_code']}</code>\n\n"
+            f"Γράψε:\n"
+            f"/approve {sub['chat_id']}\n"
+            f"/reject {sub['chat_id']}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(
@@ -574,8 +622,8 @@ async def admin_pending_callback(update: Update, context: ContextTypes.DEFAULT_T
                 ),
             ]])
         )
- 
- 
+
+
 async def admin_positions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if update.effective_chat.id != ADMIN_CHAT_ID:
@@ -595,7 +643,6 @@ async def admin_positions_callback(update: Update, context: ContextTypes.DEFAULT
             f"  PnL: <b>{'+' if pnl>=0 else ''}{pnl:.2f} USDT</b>\n\n"
         )
     await query.message.reply_text(msg, parse_mode=ParseMode.HTML)
- 
  
 # ─── GENERAL MESSAGE HANDLER ──────────────────────────────
  
@@ -673,7 +720,10 @@ async def main():
     application.add_handler(CommandHandler("start",   start))
     application.add_handler(CommandHandler("stats",   stats_command))
     application.add_handler(CommandHandler("balance", balance_command))
- 
+    application.add_handler(CommandHandler("approve", approve_command))
+    application.add_handler(CommandHandler("reject",  reject_command))
+
+    
     # ✅ FIX: Καθαρά patterns που δεν συγκρούονται
     application.add_handler(CallbackQueryHandler(
         subscribe_callback,       pattern="^subscribe$"))
