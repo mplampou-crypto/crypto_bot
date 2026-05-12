@@ -26,22 +26,18 @@ from database import (
     get_expiring_subs, get_expired_subs, get_open_trades
 )
 from trading import (
-    place_order, get_wallet_balance, get_price,
+    place_order, get_wallet_balance, get_price, fix_symbol,
     get_closed_pnl, is_position_open, get_open_positions,
-    format_trade_message, format_rejected_message,
-    format_closed_trade_message
+    close_position_market,
+    format_trade_message, format_rejected_message, format_closed_trade_message
 )
 from sentiment import get_market_sentiment, format_sentiment_message, estimate_price_target
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── HELPERS ──────────────────────────────────────────────
 
-def main_keyboard(is_admin: bool = False):
+def main_keyboard(is_admin=False):
     keys = [
         [KeyboardButton("📊 Stats"),     KeyboardButton("💰 Balance")],
         [KeyboardButton("📰 Sentiment"), KeyboardButton("📈 Open Trades")],
@@ -52,26 +48,21 @@ def main_keyboard(is_admin: bool = False):
     return ReplyKeyboardMarkup(keys, resize_keyboard=True)
 
 
-async def broadcast(application: Application, message: str):
+async def broadcast(application, message):
     import asyncpg
     from config import DATABASE_URL
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        rows = await conn.fetch(
-            "SELECT chat_id FROM users WHERE is_subscribed=TRUE")
+        rows = await conn.fetch("SELECT chat_id FROM users WHERE is_subscribed=TRUE")
         for row in rows:
-            try:
-                await application.bot.send_message(
-                    row["chat_id"], message, parse_mode=ParseMode.HTML)
-            except Exception as e:
-                logger.warning(f"Broadcast failed {row['chat_id']}: {e}")
+            try: await application.bot.send_message(row["chat_id"], message, parse_mode=ParseMode.HTML)
+            except: pass
     finally:
         await conn.close()
 
 
-async def get_open_symbols() -> list:
-    trades = await get_open_trades()
-    return [t["symbol"] for t in trades]
+async def get_open_symbols():
+    return [t["symbol"] for t in await get_open_trades()]
 
 
 # ─── /start ───────────────────────────────────────────────
@@ -80,302 +71,152 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id  = update.effective_chat.id
     username = update.effective_user.username or "User"
     await create_user(chat_id, username)
-    subscribed = await is_subscribed(chat_id)
-
-    if subscribed:
-        expiry     = await get_sub_expiry(chat_id)
-        expiry_str = expiry.strftime("%d/%m/%Y") if expiry else "—"
+    if await is_subscribed(chat_id):
+        expiry = await get_sub_expiry(chat_id)
         await update.message.reply_text(
-            f"👋 Καλώς ήρθες, <b>@{username}</b>!\n\n"
-            f"✅ Συνδρομή ενεργή έως: <b>{expiry_str}</b>",
-            reply_markup=main_keyboard(chat_id == ADMIN_CHAT_ID),
-            parse_mode=ParseMode.HTML
-        )
+            f"👋 <b>@{username}</b>!\n✅ Συνδρομή έως: <b>{expiry.strftime('%d/%m/%Y') if expiry else '—'}</b>",
+            reply_markup=main_keyboard(chat_id == ADMIN_CHAT_ID), parse_mode=ParseMode.HTML)
     else:
         await update.message.reply_text(
-            f"👋 Καλώς ήρθες στο <b>CryptoSniper Bot</b>!\n\n"
-            f"🤖 Auto trading στο Bybit\n"
-            f"• {DEFAULT_USDT} USDT margin / {DEFAULT_LEVERAGE}x leverage\n"
-            f"• Dynamic TP από S/R levels\n\n"
-            f"💰 <b>Συνδρομή: {SUBSCRIPTION_PRICE}€/μήνα</b>",
+            f"👋 <b>CryptoSniper Bot</b>\n\n🤖 Auto trading — {DEFAULT_USDT} USDT / {DEFAULT_LEVERAGE}x\n💰 <b>Συνδρομή: {SUBSCRIPTION_PRICE}€/μήνα</b>",
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    f"💳 Εγγραφή — {SUBSCRIPTION_PRICE}€",
-                    callback_data="subscribe")
-            ]])
-        )
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"💳 Εγγραφή — {SUBSCRIPTION_PRICE}€", callback_data="subscribe")]]))
 
 
 # ─── SUBSCRIPTION ─────────────────────────────────────────
 
 async def subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text(
-        f"💳 <b>Εγγραφή — {SUBSCRIPTION_PRICE}€/μήνα</b>\n\n"
-        f"1️⃣ Αγόρασε <b>Paysafe {SUBSCRIPTION_PRICE}€</b> από περίπτερο\n"
-        f"2️⃣ Στείλε μου τον <b>{PAYSAFE_CODE_LENGTH}-ψήφιο κωδικό</b>\n\n"
-        f"Στείλε τον κωδικό τώρα 👇",
-        parse_mode=ParseMode.HTML
-    )
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text(
+        f"💳 Αγόρασε Paysafe {SUBSCRIPTION_PRICE}€ και στείλε τον {PAYSAFE_CODE_LENGTH}-ψήφιο κωδικό 👇", parse_mode=ParseMode.HTML)
     context.user_data["awaiting_paysafe"] = True
 
 
 async def handle_paysafe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    code    = update.message.text.strip().replace(" ", "").replace("-", "")
-
+    code = update.message.text.strip().replace(" ", "").replace("-", "")
     if not code.isdigit() or len(code) != PAYSAFE_CODE_LENGTH:
-        await update.message.reply_text(
-            f"❌ Ο κωδικός πρέπει να έχει ακριβώς "
-            f"<b>{PAYSAFE_CODE_LENGTH} ψηφία</b>. Δοκίμασε ξανά:",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
+        await update.message.reply_text(f"❌ Πρέπει {PAYSAFE_CODE_LENGTH} ψηφία."); return
     context.user_data["awaiting_paysafe"] = False
     await set_subscription_pending(chat_id, code)
-    user     = await get_user(chat_id)
-    username = user["username"] if user else "Unknown"
-
-    await context.bot.send_message(
-        ADMIN_CHAT_ID,
-        f"🔔 <b>Νέο αίτημα συνδρομής!</b>\n\n"
-        f"👤 User: @{username}\n"
-        f"🆔 ID: <code>{chat_id}</code>\n"
-        f"💳 Paysafe: <code>{code}</code>\n\n"
-        f"Επαλήθευσε στο paysafecard.com και μετά:\n"
-        f"/approve {chat_id}  ή  /reject {chat_id}",
+    user = await get_user(chat_id)
+    await context.bot.send_message(ADMIN_CHAT_ID,
+        f"🔔 <b>Νέα συνδρομή!</b>\n👤 @{user['username'] if user else 'Unknown'} | <code>{chat_id}</code>\n💳 <code>{code}</code>\n\n/approve {chat_id}  /reject {chat_id}",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Approve", callback_data=f"APPROVE:{chat_id}"),
-            InlineKeyboardButton("❌ Reject",  callback_data=f"REJECT:{chat_id}"),
-        ]])
-    )
-    await update.message.reply_text(
-        "⏳ <b>Κωδικός ελήφθη!</b>\n\nΘα ειδοποιηθείς μόλις γίνει επαλήθευση.",
-        parse_mode=ParseMode.HTML
-    )
+            InlineKeyboardButton("✅", callback_data=f"APPROVE:{chat_id}"),
+            InlineKeyboardButton("❌", callback_data=f"REJECT:{chat_id}")]]))
+    await update.message.reply_text("⏳ Κωδικός ελήφθη!")
 
 
 async def approve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if update.effective_chat.id != ADMIN_CHAT_ID:
-        await query.answer("❌ Δεν έχεις δικαίωμα!", show_alert=True)
-        return
-    parts        = query.data.split(":", 1)
-    action       = parts[0]
-    user_chat_id = int(parts[1])
+        await query.answer("❌", show_alert=True); return
+    parts = query.data.split(":", 1)
+    action, uid = parts[0], int(parts[1])
     await query.answer()
     if action == "APPROVE":
-        await approve_subscription(user_chat_id)
+        await approve_subscription(uid)
         await query.edit_message_reply_markup(None)
-        await query.message.reply_text(
-            f"✅ Εγκρίθηκε! ID: <code>{user_chat_id}</code>",
-            parse_mode=ParseMode.HTML)
-        try:
-            await context.bot.send_message(
-                user_chat_id,
-                f"🎉 <b>Συνδρομή Ενεργοποιήθηκε!</b>\n\n"
-                f"✅ {SUBSCRIPTION_DAYS} μέρες ενεργή!\n"
-                f"Πάτα /start για να ξεκινήσεις.",
-                parse_mode=ParseMode.HTML)
-        except Exception as e:
-            logger.warning(f"Could not notify {user_chat_id}: {e}")
+        await query.message.reply_text(f"✅ {uid}")
+        try: await context.bot.send_message(uid, f"🎉 <b>Συνδρομή ενεργή — {SUBSCRIPTION_DAYS} μέρες!</b>\nΠάτα /start", parse_mode=ParseMode.HTML)
+        except: pass
     else:
         await query.edit_message_reply_markup(None)
-        await query.message.reply_text(
-            f"❌ Απορρίφθηκε! ID: <code>{user_chat_id}</code>",
-            parse_mode=ParseMode.HTML)
-        try:
-            await context.bot.send_message(
-                user_chat_id,
-                "❌ <b>Ο κωδικός απορρίφθηκε.</b>\n\nΔοκίμασε ξανά με /start.",
-                parse_mode=ParseMode.HTML)
-        except Exception as e:
-            logger.warning(f"Could not notify {user_chat_id}: {e}")
+        await query.message.reply_text(f"❌ {uid}")
+        try: await context.bot.send_message(uid, "❌ <b>Κωδικός απορρίφθηκε.</b>", parse_mode=ParseMode.HTML)
+        except: pass
 
 
-# ─── APPROVE / REJECT / SYNC / FORCECLOSE COMMANDS ───────
+# ─── ADMIN COMMANDS ───────────────────────────────────────
 
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_CHAT_ID:
-        return
-    if not context.args:
-        await update.message.reply_text("Χρήση: /approve <chat_id>")
-        return
+    if update.effective_chat.id != ADMIN_CHAT_ID: return
+    if not context.args: await update.message.reply_text("/approve <id>"); return
     try:
-        user_id = int(context.args[0])
-        await approve_subscription(user_id)
-        await update.message.reply_text(
-            f"✅ Εγκρίθηκε! <code>{user_id}</code>", parse_mode=ParseMode.HTML)
-        await context.bot.send_message(
-            user_id,
-            f"🎉 <b>Συνδρομή Ενεργοποιήθηκε!</b>\n\n"
-            f"✅ {SUBSCRIPTION_DAYS} μέρες ενεργή!\nΠάτα /start.",
-            parse_mode=ParseMode.HTML)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        uid = int(context.args[0])
+        await approve_subscription(uid)
+        await update.message.reply_text(f"✅ {uid}")
+        await context.bot.send_message(uid, f"🎉 <b>Συνδρομή ενεργή — {SUBSCRIPTION_DAYS} μέρες!</b>", parse_mode=ParseMode.HTML)
+    except Exception as e: await update.message.reply_text(f"❌ {e}")
 
 
 async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_CHAT_ID:
-        return
-    if not context.args:
-        await update.message.reply_text("Χρήση: /reject <chat_id>")
-        return
+    if update.effective_chat.id != ADMIN_CHAT_ID: return
+    if not context.args: await update.message.reply_text("/reject <id>"); return
     try:
-        user_id = int(context.args[0])
-        await update.message.reply_text(
-            f"❌ Απορρίφθηκε! <code>{user_id}</code>", parse_mode=ParseMode.HTML)
-        await context.bot.send_message(
-            user_id,
-            "❌ <b>Ο κωδικός απορρίφθηκε.</b>\n\nΔοκίμασε ξανά με /start.",
-            parse_mode=ParseMode.HTML)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        uid = int(context.args[0])
+        await update.message.reply_text(f"❌ {uid}")
+        await context.bot.send_message(uid, "❌ <b>Κωδικός απορρίφθηκε.</b>", parse_mode=ParseMode.HTML)
+    except Exception as e: await update.message.reply_text(f"❌ {e}")
 
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ελέγχει Bybit για κλειστά trades και τα ενημερώνει στη DB"""
-    if update.effective_chat.id != ADMIN_CHAT_ID:
-        return
-    await update.message.reply_text("⏳ Συγχρονίζω με Bybit...")
+    if update.effective_chat.id != ADMIN_CHAT_ID: return
+    await update.message.reply_text("⏳ Sync...")
     closed = 0
     try:
-        open_trades  = await get_open_trades()
+        open_trades = await get_open_trades()
         closed_bybit = await get_closed_pnl(limit=50)
-        symbol_pnl   = {}
+        sym_pnl = {}
         for c in closed_bybit:
-            sym = c.get("symbol", "")
-            if sym and sym not in symbol_pnl:
-                symbol_pnl[sym] = float(c.get("closedPnl", 0))
-
+            s = c.get("symbol", "")
+            if s and s not in sym_pnl: sym_pnl[s] = float(c.get("closedPnl", 0))
         for trade in open_trades:
-            still_open = await is_position_open(trade["symbol"])
-            if not still_open:
-                pnl    = symbol_pnl.get(trade["symbol"], 0.0)
+            sym = fix_symbol(trade["symbol"])
+            if not await is_position_open(sym):
+                pnl = sym_pnl.get(sym, 0.0)
                 result = "WIN" if pnl >= 0 else "LOSS"
                 await close_trade(trade["id"], result, round(pnl, 2))
-                msg = format_closed_trade_message(
-                    trade["symbol"], trade["side"], pnl, result)
-                await broadcast(context.application, msg)
+                await broadcast(context.application, format_closed_trade_message(sym, trade["side"], pnl, result))
                 closed += 1
-
-        if closed == 0:
-            await update.message.reply_text("✅ Δεν βρέθηκαν νέα κλειστά trades.")
-        else:
-            await update.message.reply_text(
-                f"✅ Συγχρονίστηκαν <b>{closed} trades</b>!",
-                parse_mode=ParseMode.HTML)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Sync error: {e}")
+        await update.message.reply_text(f"✅ {closed} trades synced" if closed else "✅ Όλα OK")
+    except Exception as e: await update.message.reply_text(f"❌ {e}")
 
 
 async def forceclose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /forceclose — Κλείνει ΟΛΕΣ τις ανοιχτές θέσεις στη DB χειροκίνητα.
-    Χρήση: /forceclose WIN ή /forceclose LOSS ή /forceclose <pnl_usdt>
-    Παράδειγμα: /forceclose 25.5  → WIN με +25.5 USDT
-                /forceclose -20   → LOSS με -20 USDT
-                /forceclose 0     → κλείνει όλα με PnL 0
-    """
-    if update.effective_chat.id != ADMIN_CHAT_ID:
-        return
-
+    if update.effective_chat.id != ADMIN_CHAT_ID: return
     open_trades = await get_open_trades()
     if not open_trades:
-        await update.message.reply_text("📭 Δεν υπάρχουν ανοιχτά trades.")
-        return
-
+        await update.message.reply_text("📭 Κανένα ανοιχτό trade."); return
     if not context.args:
-        # Δείξε λίστα ανοιχτών trades
-        msg = f"📌 <b>Ανοιχτά trades στη DB ({len(open_trades)}):</b>\n\n"
+        msg = f"📌 <b>{len(open_trades)} ανοιχτά:</b>\n"
         for t in open_trades:
-            msg += (f"• ID:{t['id']} | {t['symbol']} "
-                    f"{'LONG' if t['side']=='Buy' else 'SHORT'} | "
-                    f"Entry: ${t['entry_price']:,.4f}\n")
-        msg += (f"\nΧρήση:\n"
-                f"/forceclose 25.5  → κλείνει ΟΛΕΣ με +25.5 USDT\n"
-                f"/forceclose -20   → κλείνει ΟΛΕΣ με -20 USDT\n"
-                f"/forceclose sync  → προσπαθεί auto sync πρώτα")
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-        return
-
-    arg = context.args[0].lower()
-
-    # Auto sync πρώτα
-    if arg == "sync":
-        await sync_command(update, context)
-        return
-
+            msg += f"• {t['symbol']} {'L' if t['side']=='Buy' else 'S'} entry=${t['entry_price']:,.2f}\n"
+        msg += "\n/forceclose 25.5 → κλείνει με +25.5\n/forceclose -20 → κλείνει με -20"
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML); return
     try:
-        pnl_usdt = float(arg)
-        result   = "WIN" if pnl_usdt >= 0 else "LOSS"
-        count    = 0
-        for trade in open_trades:
-            await close_trade(trade["id"], result, pnl_usdt)
-            msg = format_closed_trade_message(
-                trade["symbol"], trade["side"], pnl_usdt, result)
-            await broadcast(context.application, msg)
-            count += 1
-
-        await update.message.reply_text(
-            f"✅ Έκλεισαν <b>{count} trades</b> με "
-            f"<b>{'+' if pnl_usdt >= 0 else ''}{pnl_usdt} USDT</b> ({result})",
-            parse_mode=ParseMode.HTML)
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Λάθος format.\nΧρήση: /forceclose 25.5 ή /forceclose -20")
+        pnl = float(context.args[0])
+        result = "WIN" if pnl >= 0 else "LOSS"
+        for t in open_trades:
+            await close_trade(t["id"], result, pnl)
+            await broadcast(context.application, format_closed_trade_message(t["symbol"], t["side"], pnl, result))
+        await update.message.reply_text(f"✅ {len(open_trades)} trades closed ({'+' if pnl>=0 else ''}{pnl})")
+    except ValueError: await update.message.reply_text("❌ /forceclose <αριθμός>")
 
 
 # ─── STATS ────────────────────────────────────────────────
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if not await is_subscribed(chat_id):
-        await update.message.reply_text("❌ Χρειάζεσαι συνδρομή. Πάτα /start")
-        return
-
-    stats  = await get_stats()
+    if not await is_subscribed(update.effective_chat.id):
+        await update.message.reply_text("❌ Πάτα /start"); return
+    stats = await get_stats()
     trades = await get_last_trades(20)
-
-    msg = (
-        f"📊 <b>Trading Stats</b>\n\n"
-        f"✅ Wins: <b>{stats['wins']}</b>  "
-        f"❌ Losses: <b>{stats['losses']}</b>\n"
-        f"📈 Winrate: <b>{stats['winrate']}%</b>\n"
-        f"💰 Total PnL: <b>"
-        f"{'+' if stats['total_pnl'] >= 0 else ''}"
-        f"{stats['total_pnl']} USDT</b>\n"
-        f"📅 Σήμερα: <b>{stats['today_trades']} trades</b> | "
-        f"<b>{'+' if stats['today_pnl'] >= 0 else ''}"
-        f"{stats['today_pnl']} USDT</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"<b>Τελευταία {len(trades)} Trades:</b>\n\n"
-    )
-
+    msg = (f"📊 <b>Stats</b>\n\n✅ {stats['wins']}W  ❌ {stats['losses']}L  📈 {stats['winrate']}%\n"
+           f"💰 PnL: <b>{'+' if stats['total_pnl']>=0 else ''}{stats['total_pnl']} USDT</b>\n"
+           f"📅 Σήμερα: {stats['today_trades']}t | {'+' if stats['today_pnl']>=0 else ''}{stats['today_pnl']} USDT\n\n"
+           f"━━━━━━━━━━━━━━━━━\n<b>Τελευταία {len(trades)} Trades:</b>\n\n")
     for t in trades:
-        pnl  = t["pnl_usdt"] or 0
-        sym  = t["symbol"].replace("USDT", "")
-        side = "LONG" if t["side"] == "Buy" else "SHORT"
-        if t["result"] == "WIN":
-            emoji = "🟢"
-            sign  = "+"
-        else:
-            emoji = "🔴"
-            sign  = "" if pnl < 0 else "+"
-        msg += f"{emoji} <b>{sym}</b> {side} {sign}{pnl:.2f} USDT\n"
-
+        pnl = t["pnl_usdt"] or 0
+        e = "🟢" if t["result"]=="WIN" else "🔴"
+        s = "+" if pnl >= 0 else ""
+        msg += f"{e} <b>{t['symbol'].replace('USDT','')}</b> {'L' if t['side']=='Buy' else 'S'} {s}{pnl:.2f} USDT\n"
     if not trades:
-        msg += "<i>Δεν υπάρχουν κλειστά trades ακόμα.</i>\n"
-        if update.effective_chat.id == ADMIN_CHAT_ID:
-            open_t = await get_open_trades()
-            if open_t:
-                msg += (f"\n💡 <i>Υπάρχουν {len(open_t)} ανοιχτά trades στη DB.\n"
-                        f"Γράψε /sync ή /forceclose για να τα κλείσεις.</i>")
-
+        msg += "<i>Δεν υπάρχουν κλειστά trades.</i>\n"
+        ot = await get_open_trades()
+        if ot and update.effective_chat.id == ADMIN_CHAT_ID:
+            msg += f"\n💡 {len(ot)} ανοιχτά → /sync ή /forceclose"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
@@ -383,269 +224,192 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def open_trades_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_subscribed(update.effective_chat.id):
-        await update.message.reply_text("❌ Χρειάζεσαι συνδρομή.")
-        return
+        await update.message.reply_text("❌"); return
     trades = await get_open_trades()
     if not trades:
-        await update.message.reply_text("📭 Δεν υπάρχουν ανοιχτές θέσεις.")
-        return
+        await update.message.reply_text("📭 Δεν υπάρχουν ανοιχτές θέσεις."); return
     msg = "📈 <b>Ανοιχτές Θέσεις:</b>\n\n"
     for t in trades:
-        emoji   = "🟢" if t["side"] == "Buy" else "🔴"
-        coin    = t["symbol"].replace("USDT", "")
-        current = await get_price(t["symbol"])
+        cur = await get_price(t["symbol"])
         if t["side"] == "Buy":
-            pnl = round((current - t["entry_price"]) / t["entry_price"]
-                        * 100 * t["leverage"] * t["usdt_amount"] / 100, 2)
+            pnl = round((cur - t["entry_price"]) / t["entry_price"] * 100 * t["leverage"] * t["usdt_amount"] / 100, 2)
         else:
-            pnl = round((t["entry_price"] - current) / t["entry_price"]
-                        * 100 * t["leverage"] * t["usdt_amount"] / 100, 2)
-        msg += (
-            f"{emoji} <b>{coin}</b>\n"
-            f"  Entry: ${t['entry_price']:,.4f} → Now: ${current:,.4f}\n"
-            f"  SL: ${t['sl_price']:,.4f} | TP: ${t['tp_price']:,.4f}\n"
-            f"  PnL: <b>{'+' if pnl>=0 else ''}{pnl} USDT</b>\n\n"
-        )
+            pnl = round((t["entry_price"] - cur) / t["entry_price"] * 100 * t["leverage"] * t["usdt_amount"] / 100, 2)
+        e = "🟢" if t["side"]=="Buy" else "🔴"
+        msg += (f"{e} <b>{t['symbol'].replace('USDT','')}</b>\n"
+                f"  Entry: ${t['entry_price']:,.4f} → Now: ${cur:,.4f}\n"
+                f"  SL: ${t['sl_price']:,.4f} | TP: ${t['tp_price']:,.4f}\n"
+                f"  PnL: <b>{'+' if pnl>=0 else ''}{pnl} USDT</b>\n\n")
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
-# ─── BALANCE ──────────────────────────────────────────────
+# ─── BALANCE / SENTIMENT ─────────────────────────────────
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_subscribed(update.effective_chat.id):
-        await update.message.reply_text("❌ Χρειάζεσαι συνδρομή.")
-        return
-    balance = await get_wallet_balance()
-    await update.message.reply_text(
-        f"💰 <b>Bybit Wallet</b>\n\nΔιαθέσιμο: <b>{balance:,.2f} USDT</b>",
-        parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌"); return
+    b = await get_wallet_balance()
+    await update.message.reply_text(f"💰 <b>Bybit:</b> {b:,.2f} USDT", parse_mode=ParseMode.HTML)
 
-
-# ─── SENTIMENT ────────────────────────────────────────────
 
 async def sentiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_subscribed(update.effective_chat.id):
-        await update.message.reply_text("❌ Χρειάζεσαι συνδρομή.")
-        return
-    await update.message.reply_text(
-        "📰 <b>Market Sentiment</b>\n\nΔιάλεξε coin:",
-        parse_mode=ParseMode.HTML,
+        await update.message.reply_text("❌"); return
+    await update.message.reply_text("📰 Διάλεξε coin:", parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("₿ BTC",  callback_data="sent_BTCUSDT"),
-             InlineKeyboardButton("Ξ ETH",  callback_data="sent_ETHUSDT")],
-            [InlineKeyboardButton("◎ SOL",  callback_data="sent_SOLUSDT"),
-             InlineKeyboardButton("✕ XRP",  callback_data="sent_XRPUSDT")],
-            [InlineKeyboardButton("🐕 DOGE", callback_data="sent_DOGEUSDT")],
-        ]))
+            [InlineKeyboardButton("₿ BTC", callback_data="sent_BTCUSDT"),
+             InlineKeyboardButton("Ξ ETH", callback_data="sent_ETHUSDT")],
+            [InlineKeyboardButton("◎ SOL", callback_data="sent_SOLUSDT"),
+             InlineKeyboardButton("✕ XRP", callback_data="sent_XRPUSDT")],
+            [InlineKeyboardButton("🐕 DOGE", callback_data="sent_DOGEUSDT")]]))
 
 
 async def sentiment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query  = update.callback_query
+    query = update.callback_query
     symbol = query.data.replace("sent_", "")
     await query.answer()
-    await query.message.reply_text("⏳ Αναλύω τα νέα...")
-    sentiment     = await get_market_sentiment(symbol)
-    current_price = await get_price(symbol)
-    side          = "LONG" if sentiment["score"] >= 0 else "SHORT"
-    price_target  = estimate_price_target(symbol, current_price, sentiment["score"], side)
-    msg = format_sentiment_message(symbol, sentiment, price_target)
-    await query.message.reply_text(
-        msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await query.message.reply_text("⏳ Αναλύω...")
+    sentiment = await get_market_sentiment(symbol)
+    cur = await get_price(symbol)
+    side = "LONG" if sentiment["score"] >= 0 else "SHORT"
+    pt = estimate_price_target(symbol, cur, sentiment["score"], side)
+    await query.message.reply_text(format_sentiment_message(symbol, sentiment, pt),
+        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-# ─── MONITOR ──────────────────────────────────────────────
+# ─── MONITORS ─────────────────────────────────────────────
 
-async def monitor_closed_trades(application: Application):
-    """Κάθε 60 δευτερόλεπτα ελέγχει για κλειστά trades"""
+async def monitor_closed_trades(application):
     while True:
         await asyncio.sleep(60)
         try:
-            open_trades  = await get_open_trades()
-            if not open_trades:
-                continue
+            open_trades = await get_open_trades()
+            if not open_trades: continue
             closed_bybit = await get_closed_pnl(limit=50)
-            symbol_pnl   = {}
+            sym_pnl = {}
             for c in closed_bybit:
-                sym = c.get("symbol", "")
-                if sym and sym not in symbol_pnl:
-                    symbol_pnl[sym] = float(c.get("closedPnl", 0))
+                s = c.get("symbol", "")
+                if s and s not in sym_pnl: sym_pnl[s] = float(c.get("closedPnl", 0))
             for trade in open_trades:
-                still_open = await is_position_open(trade["symbol"])
-                if not still_open:
-                    pnl    = symbol_pnl.get(trade["symbol"], 0.0)
+                sym = fix_symbol(trade["symbol"])
+                if not await is_position_open(sym):
+                    pnl = sym_pnl.get(sym, 0.0)
                     result = "WIN" if pnl >= 0 else "LOSS"
                     await close_trade(trade["id"], result, round(pnl, 2))
-                    msg = format_closed_trade_message(
-                        trade["symbol"], trade["side"], pnl, result)
-                    await broadcast(application, msg)
-                    logger.info(f"Trade closed: {trade['symbol']} {result} {pnl:.2f}")
-        except Exception as e:
-            logger.error(f"Monitor error: {e}")
+                    await broadcast(application, format_closed_trade_message(sym, trade["side"], pnl, result))
+                    logger.info(f"Trade closed: {sym} {result} {pnl:.2f}")
+        except Exception as e: logger.error(f"Monitor error: {e}")
 
 
-async def check_expiring_subs(application: Application):
-    """Κάθε 12 ώρες ελέγχει λήξεις συνδρομών"""
+async def check_expiring_subs(application):
     while True:
         try:
             for user in await get_expiring_subs(days_ahead=1):
-                try:
-                    await application.bot.send_message(
-                        user["chat_id"],
-                        "⚠️ <b>Η συνδρομή σου λήγει αύριο!</b>\n\nΑνανέωσέ την με /start.",
-                        parse_mode=ParseMode.HTML)
-                except Exception:
-                    pass
+                try: await application.bot.send_message(user["chat_id"],
+                    "⚠️ <b>Η συνδρομή σου λήγει αύριο!</b>\nΑνανέωσε με /start", parse_mode=ParseMode.HTML)
+                except: pass
             for user in await get_expired_subs():
                 await deactivate_subscription(user["chat_id"])
-                try:
-                    await application.bot.send_message(
-                        user["chat_id"],
-                        "⏰ <b>Η συνδρομή σου έληξε!</b>\n\nΠάτα /start για ανανέωση.",
-                        parse_mode=ParseMode.HTML)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.error(f"Sub expiry error: {e}")
+                try: await application.bot.send_message(user["chat_id"],
+                    "⏰ <b>Η συνδρομή σου έληξε!</b>\nΠάτα /start", parse_mode=ParseMode.HTML)
+                except: pass
+        except Exception as e: logger.error(f"Sub error: {e}")
         await asyncio.sleep(43200)
 
 
 # ─── WEBHOOK ──────────────────────────────────────────────
 
-async def handle_tradingview_webhook(symbol: str, side: str, score: int,
-                                     application: Application,
-                                     tp_price: float = None,
-                                     sl_price: float = None):
+async def handle_tradingview_webhook(symbol, side, score, application, tp_price=None, sl_price=None):
+    symbol = fix_symbol(symbol)
+
     if score < MIN_SIGNAL_SCORE:
-        reason = f"Score {score}/100 κάτω από {MIN_SIGNAL_SCORE}"
-        await save_rejected_signal(symbol, side, score, reason)
+        await save_rejected_signal(symbol, side, score, f"Score {score} < {MIN_SIGNAL_SCORE}")
         await application.bot.send_message(ADMIN_CHAT_ID,
-            format_rejected_message(symbol, side, score, reason), parse_mode=ParseMode.HTML)
+            format_rejected_message(symbol, side, score, f"Score {score} < {MIN_SIGNAL_SCORE}"), parse_mode=ParseMode.HTML)
         return
 
     if symbol in await get_open_symbols():
-        reason = f"Υπάρχει ήδη ανοιχτό trade για {symbol}"
-        await save_rejected_signal(symbol, side, score, reason)
+        await save_rejected_signal(symbol, side, score, f"Ήδη ανοιχτό {symbol}")
         await application.bot.send_message(ADMIN_CHAT_ID,
-            f"⏸ <b>Signal παραλείφθηκε</b>\nPair: <b>{symbol}</b>\nΛόγος: <i>{reason}</i>",
-            parse_mode=ParseMode.HTML)
+            f"⏸ <b>Skip</b> — {symbol} ήδη ανοιχτό", parse_mode=ParseMode.HTML)
         return
 
     if await get_today_trades_count() >= MAX_DAILY_TRADES:
-        reason = f"Ημερήσιο όριο {MAX_DAILY_TRADES} trades"
-        await save_rejected_signal(symbol, side, score, reason)
-        await application.bot.send_message(ADMIN_CHAT_ID,
-            format_rejected_message(symbol, side, score, reason), parse_mode=ParseMode.HTML)
+        await save_rejected_signal(symbol, side, score, "Ημερήσιο όριο")
         return
 
     if await get_consecutive_losses() >= MAX_CONSECUTIVE_LOSSES:
-        reason = f"{MAX_CONSECUTIVE_LOSSES} consecutive losses"
-        await save_rejected_signal(symbol, side, score, reason)
-        await application.bot.send_message(ADMIN_CHAT_ID,
-            format_rejected_message(symbol, side, score, reason), parse_mode=ParseMode.HTML)
+        await save_rejected_signal(symbol, side, score, "Consecutive losses")
         return
 
     sentiment_data = await get_market_sentiment(symbol)
-    side_bybit     = "Buy" if side.upper() == "LONG" else "Sell"
+    side_bybit = "Buy" if side.upper() == "LONG" else "Sell"
 
     if side_bybit == "Buy" and sentiment_data["score"] < -20:
-        reason = f"Bearish sentiment ({sentiment_data['score']})"
-        await save_rejected_signal(symbol, side, score, reason)
-        await broadcast(application, format_rejected_message(symbol, side, score, reason))
+        await save_rejected_signal(symbol, side, score, "Bearish sentiment")
+        await broadcast(application, format_rejected_message(symbol, side, score, "Bearish sentiment"))
         return
-
     if side_bybit == "Sell" and sentiment_data["score"] > 20:
-        reason = f"Bullish sentiment ({sentiment_data['score']})"
-        await save_rejected_signal(symbol, side, score, reason)
-        await broadcast(application, format_rejected_message(symbol, side, score, reason))
+        await save_rejected_signal(symbol, side, score, "Bullish sentiment")
+        await broadcast(application, format_rejected_message(symbol, side, score, "Bullish sentiment"))
         return
 
-    result = await place_order(
-        symbol, side_bybit, DEFAULT_USDT, DEFAULT_LEVERAGE,
-        DEFAULT_SL_PCT, DEFAULT_TP_PCT, tp_price=tp_price, sl_price=sl_price)
+    result = await place_order(symbol, side_bybit, DEFAULT_USDT, DEFAULT_LEVERAGE,
+                               DEFAULT_SL_PCT, DEFAULT_TP_PCT, tp_price=tp_price, sl_price=sl_price)
 
     if result["success"]:
-        await save_trade(
-            symbol, side_bybit, result["entry_price"],
-            result["sl_price"], result["tp_price"],
-            DEFAULT_LEVERAGE, DEFAULT_USDT, result["qty"],
-            result["order_id"], score, "TradingView")
+        await save_trade(symbol, side_bybit, result["entry_price"], result["sl_price"], result["tp_price"],
+                         DEFAULT_LEVERAGE, DEFAULT_USDT, result["qty"], result["order_id"], score, "TradingView")
         await broadcast(application, format_trade_message(result))
-        logger.info(f"Trade opened: {symbol} {side_bybit} score={score}")
+        logger.info(f"Trade: {symbol} {side_bybit} score={score}")
     else:
         await application.bot.send_message(ADMIN_CHAT_ID,
-            f"❌ <b>Trade failed</b>\nSymbol: {symbol}\n"
-            f"Error: <code>{result.get('error')}</code>",
+            f"❌ <b>Trade failed</b>\n{symbol} {side_bybit}\n<code>{result.get('error')}</code>",
             parse_mode=ParseMode.HTML)
 
 
 # ─── ADMIN PANEL ──────────────────────────────────────────
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats   = await get_stats()
+    stats = await get_stats()
     balance = await get_wallet_balance()
     pending = await get_pending_subscriptions()
-    open_t  = await get_open_trades()
-
-    msg = (
-        f"👑 <b>Admin Panel</b>\n\n"
-        f"💰 Wallet: <b>{balance:,.2f} USDT</b>\n"
-        f"📊 {stats['total']} trades ({stats['wins']}W / {stats['losses']}L)\n"
-        f"📈 PnL: <b>{'+' if stats['total_pnl']>=0 else ''}{stats['total_pnl']} USDT</b>\n"
-        f"📌 Ανοιχτά: <b>{len(open_t)}</b>\n"
-        f"⏳ Pending subs: <b>{len(pending)}</b>\n\n"
-        f"<b>Εντολές:</b>\n"
-        f"/approve &lt;id&gt;   /reject &lt;id&gt;\n"
-        f"/sync   /forceclose"
-    )
-    await update.message.reply_text(
-        msg, parse_mode=ParseMode.HTML,
+    open_t = await get_open_trades()
+    msg = (f"👑 <b>Admin Panel</b>\n\n💰 {balance:,.2f} USDT\n"
+           f"📊 {stats['total']}t ({stats['wins']}W/{stats['losses']}L) PnL: {'+' if stats['total_pnl']>=0 else ''}{stats['total_pnl']}\n"
+           f"📌 Ανοιχτά: {len(open_t)} | Pending: {len(pending)}\n\n"
+           f"/approve /reject /sync /forceclose")
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("📋 Pending Subs",  callback_data="AP"),
-            InlineKeyboardButton("📈 Bybit Positions", callback_data="BP"),
-        ]])
-    )
+            InlineKeyboardButton("📋 Pending", callback_data="AP"),
+            InlineKeyboardButton("📈 Positions", callback_data="BP")]]))
 
 
 async def ap_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pending subs callback"""
     query = update.callback_query
-    if update.effective_chat.id != ADMIN_CHAT_ID:
-        await query.answer("❌", show_alert=True)
-        return
+    if update.effective_chat.id != ADMIN_CHAT_ID: await query.answer("❌", show_alert=True); return
     await query.answer()
     subs = await get_pending_subscriptions()
-    if not subs:
-        await query.message.reply_text("Δεν υπάρχουν pending subs.")
-        return
+    if not subs: await query.message.reply_text("Κανένα pending."); return
     for sub in subs:
         await query.message.reply_text(
-            f"👤 @{sub['username']} (ID: {sub['chat_id']})\n"
-            f"💳 Code: <code>{sub['paysafe_code']}</code>",
+            f"👤 @{sub['username']} | <code>{sub['chat_id']}</code>\n💳 <code>{sub['paysafe_code']}</code>\n/approve {sub['chat_id']}  /reject {sub['chat_id']}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Approve", callback_data=f"APPROVE:{sub['chat_id']}"),
-                InlineKeyboardButton("❌ Reject",  callback_data=f"REJECT:{sub['chat_id']}"),
-            ]])
-        )
+                InlineKeyboardButton("✅", callback_data=f"APPROVE:{sub['chat_id']}"),
+                InlineKeyboardButton("❌", callback_data=f"REJECT:{sub['chat_id']}")]]))
 
 
 async def bp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bybit positions callback"""
     query = update.callback_query
-    if update.effective_chat.id != ADMIN_CHAT_ID:
-        await query.answer("❌", show_alert=True)
-        return
+    if update.effective_chat.id != ADMIN_CHAT_ID: await query.answer("❌", show_alert=True); return
     await query.answer()
     positions = await get_open_positions()
-    if not positions:
-        await query.message.reply_text("Δεν υπάρχουν ανοιχτές θέσεις στο Bybit.")
-        return
-    msg = "📈 <b>Bybit Positions:</b>\n\n"
+    if not positions: await query.message.reply_text("Κανένα position."); return
+    msg = "📈 <b>Bybit:</b>\n\n"
     for p in positions:
-        pnl  = float(p.get("unrealisedPnl", 0))
-        msg += (f"• {p['symbol']} {p['side']}\n"
-                f"  Size: {p['size']} | Entry: ${float(p['avgPrice']):,.4f}\n"
-                f"  PnL: <b>{'+' if pnl>=0 else ''}{pnl:.2f} USDT</b>\n\n")
+        pnl = float(p.get("unrealisedPnl", 0))
+        msg += f"• {p['symbol']} {p['side']} size={p['size']} PnL={'+' if pnl>=0 else ''}{pnl:.2f}\n"
     await query.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
@@ -653,29 +417,16 @@ async def bp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    text    = update.message.text.strip() if update.message.text else ""
-
-    if context.user_data.get("awaiting_paysafe"):
-        await handle_paysafe(update, context)
-        return
-
-    if text == "📊 Stats":
-        await stats_command(update, context)
-    elif text == "💰 Balance":
-        await balance_command(update, context)
-    elif text == "📰 Sentiment":
-        await sentiment_command(update, context)
-    elif text == "📈 Open Trades":
-        await open_trades_command(update, context)
+    text = update.message.text.strip() if update.message.text else ""
+    if context.user_data.get("awaiting_paysafe"): await handle_paysafe(update, context); return
+    if text == "📊 Stats": await stats_command(update, context)
+    elif text == "💰 Balance": await balance_command(update, context)
+    elif text == "📰 Sentiment": await sentiment_command(update, context)
+    elif text == "📈 Open Trades": await open_trades_command(update, context)
     elif text == "ℹ️ Help":
         await update.message.reply_text(
-            f"ℹ️ <b>Βοήθεια</b>\n\n"
-            f"/start — Αρχική\n"
-            f"📊 Stats — Τελευταία 20 trades\n"
-            f"💰 Balance — Bybit υπόλοιπο\n"
-            f"📰 Sentiment — Ανάλυση αγοράς\n"
-            f"📈 Open Trades — Ανοιχτές θέσεις\n\n"
-            f"<b>Admin:</b> /sync /forceclose /approve /reject",
+            f"ℹ️ <b>Help</b>\n\n/start /sync /forceclose\n📊 Stats 💰 Balance 📰 Sentiment 📈 Open\n\n"
+            f"Settings: {DEFAULT_USDT} USDT / {DEFAULT_LEVERAGE}x | Dynamic TP | Max {MAX_DAILY_TRADES}/day",
             parse_mode=ParseMode.HTML)
     elif text == "👑 Admin Panel" and chat_id == ADMIN_CHAT_ID:
         await admin_panel(update, context)
@@ -688,13 +439,40 @@ from aiohttp import web
 
 async def tradingview_handler(request: web.Request):
     try:
-        data     = await request.json()
-        symbol   = data.get("symbol", "BTCUSDT").upper()
-        side     = data.get("side",   "LONG").upper()
+        data = await request.json()
+        symbol   = fix_symbol(data.get("symbol", "BTCUSDT"))
+        side     = data.get("side", "LONG").upper()
         score    = int(float(data.get("score", 0)))
         tp_price = float(data.get("tp", 0)) or None
         sl_price = float(data.get("sl", 0)) or None
         app      = request.app["telegram_app"]
+
+        # ✅ CLOSE signals — κλείνει ανοιχτό trade αυτόματα
+        if side in ["CLOSE_LONG", "CLOSE_SHORT"]:
+            close_side = "Buy" if side == "CLOSE_LONG" else "Sell"
+            open_trades = await get_open_trades()
+            for trade in open_trades:
+                if fix_symbol(trade["symbol"]) == symbol and trade["side"] == close_side:
+                    ok = await close_position_market(symbol, trade["side"], trade["qty"])
+                    if ok:
+                        cur = await get_price(symbol)
+                        if cur > 0:
+                            if trade["side"] == "Buy":
+                                pnl_est = round((cur - trade["entry_price"]) / trade["entry_price"]
+                                    * 100 * trade["leverage"] * trade["usdt_amount"] / 100, 2)
+                            else:
+                                pnl_est = round((trade["entry_price"] - cur) / trade["entry_price"]
+                                    * 100 * trade["leverage"] * trade["usdt_amount"] / 100, 2)
+                        else:
+                            pnl_est = 0.0
+                        result = "WIN" if pnl_est >= 0 else "LOSS"
+                        await close_trade(trade["id"], result, pnl_est)
+                        msg = format_closed_trade_message(symbol, trade["side"], pnl_est, result)
+                        await broadcast(app, msg + "\n\n<i>🔒 Auto-close: Fake/CHoCH</i>")
+                        logger.info(f"Auto-close: {symbol} {result} {pnl_est}")
+            return web.json_response({"status": "closed"})
+
+        # Normal LONG/SHORT signal
         asyncio.create_task(
             handle_tradingview_webhook(symbol, side, score, app, tp_price, sl_price))
         return web.json_response({"status": "ok"})
@@ -703,7 +481,7 @@ async def tradingview_handler(request: web.Request):
         return web.json_response({"status": "error", "msg": str(e)}, status=400)
 
 
-async def health_handler(request: web.Request):
+async def health_handler(request):
     return web.json_response({"status": "running"})
 
 
@@ -711,51 +489,43 @@ async def health_handler(request: web.Request):
 
 async def main():
     await init_db()
-
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start",       start))
-    application.add_handler(CommandHandler("stats",       stats_command))
-    application.add_handler(CommandHandler("balance",     balance_command))
-    application.add_handler(CommandHandler("approve",     approve_command))
-    application.add_handler(CommandHandler("reject",      reject_command))
-    application.add_handler(CommandHandler("sync",        sync_command))
-    application.add_handler(CommandHandler("forceclose",  forceclose_command))
+    application.add_handler(CommandHandler("start",      start))
+    application.add_handler(CommandHandler("stats",      stats_command))
+    application.add_handler(CommandHandler("balance",    balance_command))
+    application.add_handler(CommandHandler("approve",    approve_command))
+    application.add_handler(CommandHandler("reject",     reject_command))
+    application.add_handler(CommandHandler("sync",       sync_command))
+    application.add_handler(CommandHandler("forceclose", forceclose_command))
 
     application.add_handler(CallbackQueryHandler(subscribe_callback, pattern="^subscribe$"))
     application.add_handler(CallbackQueryHandler(approve_callback,   pattern="^(APPROVE|REJECT):"))
     application.add_handler(CallbackQueryHandler(sentiment_callback, pattern="^sent_"))
     application.add_handler(CallbackQueryHandler(ap_callback,        pattern="^AP$"))
     application.add_handler(CallbackQueryHandler(bp_callback,        pattern="^BP$"))
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     aio_app = web.Application()
     aio_app["telegram_app"] = application
     aio_app.router.add_post("/webhook", tradingview_handler)
-    aio_app.router.add_get("/health",   health_handler)
-    aio_app.router.add_get("/",         health_handler)
+    aio_app.router.add_get("/health", health_handler)
+    aio_app.router.add_get("/", health_handler)
 
     await application.initialize()
     await application.start()
-    await application.updater.start_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
-    port   = int(__import__("os").environ.get("PORT", 8080))
+    port = int(__import__("os").environ.get("PORT", 8080))
     runner = web.AppRunner(aio_app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-    logger.info(f"🚀 Bot running on port {port}")
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    logger.info(f"🚀 Bot on port {port}")
 
     asyncio.create_task(monitor_closed_trades(application))
     asyncio.create_task(check_expiring_subs(application))
 
-    try:
-        await asyncio.Event().wait()
+    try: await asyncio.Event().wait()
     finally:
         await application.updater.stop()
         await application.stop()
