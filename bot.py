@@ -19,11 +19,11 @@ from config import (
 )
 from database import (
     init_db, get_user, create_user, is_subscribed, get_sub_expiry,
-    set_subscription_pending, approve_subscription,
+    set_subscription_pending, approve_subscription, deactivate_subscription,
     get_pending_subscriptions, save_trade, close_trade,
     get_last_trades, get_stats, save_rejected_signal,
     get_today_trades_count, get_consecutive_losses,
-    get_expiring_subs, get_open_trades
+    get_expiring_subs, get_expired_subs, get_open_trades
 )
 from trading import (
     place_order, get_wallet_balance, get_price,
@@ -39,8 +39,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 from database import (
-    ...
-    get_expiring_subs, get_expired_subs, deactivate_subscription  # ← πρόσθεσε αυτά
+        get_expiring_subs, get_expired_subs, deactivate_subscription  # ← πρόσθεσε αυτά
 )
  
  
