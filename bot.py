@@ -38,6 +38,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+from database import (
+    ...
+    get_expiring_subs, get_expired_subs, deactivate_subscription  # ← πρόσθεσε αυτά
+)
  
  
 # ─── HELPERS ──────────────────────────────────────────────
@@ -402,27 +406,38 @@ async def monitor_closed_trades(application: Application):
 # ─── SUBSCRIPTION EXPIRY ──────────────────────────────────
  
 async def check_expiring_subs(application: Application):
-    """Κάθε 12 ώρες ελέγχει συνδρομές που λήγουν σε 3 μέρες"""
     while True:
         try:
-            expiring = await get_expiring_subs(days_ahead=3)
+            # ── Reminder 1 μέρα πριν ──
+            expiring = await get_expiring_subs(days_ahead=1)
             for user in expiring:
-                expiry    = user["sub_expires_at"]
-                days_left = (expiry - datetime.now(timezone.utc)).days
                 try:
                     await application.bot.send_message(
                         user["chat_id"],
-                        f"⚠️ <b>Η συνδρομή σου λήγει σε {days_left} μέρες!</b>\n\n"
-                        f"Ανανέωσέ την με /start",
+                        "⚠️ <b>Η συνδρομή σου λήγει αύριο!</b>\n\n"
+                        "Ανανέωσέ την με /start για να μην χάσεις πρόσβαση.",
                         parse_mode=ParseMode.HTML
                     )
                 except Exception:
                     pass
+
+            # ── Αυτόματη απενεργοποίηση expired ──
+            expired = await get_expired_subs()
+            for user in expired:
+                await deactivate_subscription(user["chat_id"])
+                try:
+                    await application.bot.send_message(
+                        user["chat_id"],
+                        "⏰ <b>Η συνδρομή σου έληξε!</b>\n\n"
+                        "Πάτα /start για να ανανεώσεις.",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+
         except Exception as e:
             logger.error(f"Sub expiry error: {e}")
-        await asyncio.sleep(43200)
- 
- 
+        await asyncio.sleep(43200)  # κάθε 12 ώρες
 # ─── TRADINGVIEW WEBHOOK ──────────────────────────────────
  
 async def handle_tradingview_webhook(symbol: str, side: str, score: int,
@@ -723,7 +738,7 @@ async def main():
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject",  reject_command))
 
-    
+
     # ✅ FIX: Καθαρά patterns που δεν συγκρούονται
     application.add_handler(CallbackQueryHandler(
         subscribe_callback,       pattern="^subscribe$"))
