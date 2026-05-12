@@ -355,3 +355,4 @@ def format_closed_trade_message(symbol: str, side: str,
         f"Κατεύθυνση: <b>{side_txt}</b>\n"
         f"PnL: <b>{sign}{pnl:.2f} USDT</b>"
     )
+
