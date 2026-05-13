@@ -24,7 +24,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # RR 1:2 → χρειάζεσαι μόνο 35% winrate για κέρδος
 DEFAULT_LEVERAGE  = 50
 DEFAULT_USDT      = 50
-DEFAULT_SL_PCT    = 0.5    # -25 USDT
+DEFAULT_SL_PCT    = 1.0    # -50 USDT
 DEFAULT_TP_PCT    = 1.0    # +50 USDT
 
 MIN_SIGNAL_SCORE  = 75
