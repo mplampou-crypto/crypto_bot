@@ -9,7 +9,7 @@ from config import (
     DEFAULT_LEVERAGE, DEFAULT_USDT, DEFAULT_SL_PCT, DEFAULT_TP_PCT
 )
  
-BASE_URL = "https://api-testnet.bybit.com" if BYBIT_TESTNET else "https://api.bybit.com"
+BASE_URL = "https://api-testnet.bybit.com" if BYBIT_TESTNET else "https://api.bytick.com"
  
 _qty_step_cache: dict = {}
 KNOWN_QTY_STEPS = {
