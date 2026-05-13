@@ -63,26 +63,46 @@ def _make_headers(sign_payload: str) -> dict:
 
 
 async def _get(endpoint: str, params: dict = None, signed: bool = False):
-    params    = params or {}
-    query_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-    headers   = _make_headers(query_str) if signed else {"Content-Type": "application/json"}
-    url       = f"{BASE_URL}{endpoint}"
-    
-        try:
-            resp = await client.get(url, params=params, headers=headers, timeout=30)
-            data = resp.json()
-            if data.get("retCode", 0) != 0:
-                print(f"[Bybit GET Error] {endpoint} → code={data.get('retCode')} msg={data.get('retMsg')}")
-            return data
-        except httpx.TimeoutException:
-            print(f"[Bybit GET TIMEOUT] {endpoint} — 30s timeout")
-            return None
-        except httpx.ConnectError as e:
-            print(f"[Bybit GET CONNECT ERROR] {endpoint} — {e}")
-            return None
-        except Exception as e:
-            print(f"[Bybit GET ERROR] {endpoint} — {type(e).__name__}: {e}")
-            return None
+    params = params or {}
+
+    query_str = "&".join(
+        f"{k}={v}" for k, v in sorted(params.items())
+    )
+
+    headers = (
+        _make_headers(query_str)
+        if signed
+        else {"Content-Type": "application/json"}
+    )
+
+    url = f"{BASE_URL}{endpoint}"
+
+    try:
+        resp = await http_client.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=30
+        )
+
+        data = resp.json()
+
+        if data.get("retCode", 0) != 0:
+            print(f"[Bybit GET Error] {endpoint} → code={data.get('retCode')} msg={data.get('retMsg')}")
+
+        return data
+
+    except httpx.TimeoutException:
+        print(f"[Bybit GET TIMEOUT] {endpoint} — 30s timeout")
+        return {"retCode": -1, "retMsg": "timeout"}
+
+    except httpx.ConnectError as e:
+        print(f"[Bybit GET CONNECT ERROR] {endpoint} — {e}")
+        return {"retCode": -1, "retMsg": str(e)}
+
+    except Exception as e:
+        print(f"[Bybit GET ERROR] {endpoint} — {type(e).__name__}: {e}")
+        return {"retCode": -1, "retMsg": str(e)}
 
 
 async def _get(endpoint: str, params: dict = None, signed: bool = False):
