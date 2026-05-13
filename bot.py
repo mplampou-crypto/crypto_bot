@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import httpx
 from datetime import datetime, timezone, timedelta
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -150,6 +151,35 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {uid}")
         await context.bot.send_message(uid, "❌ <b>Κωδικός απορρίφθηκε.</b>", parse_mode=ParseMode.HTML)
     except Exception as e: await update.message.reply_text(f"❌ {e}")
+
+
+async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Βρίσκει την IP του Railway server"""
+    if update.effective_chat.id != ADMIN_CHAT_ID: return
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get("https://api.ipify.org", timeout=10)
+            ip = resp.text
+            await update.message.reply_text(
+                f"🌐 Railway IP: <code>{ip}</code>\n\nΒάλε αυτή στο Bybit API key!",
+                parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
+
+
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Δείχνει debug info για API keys"""
+    if update.effective_chat.id != ADMIN_CHAT_ID: return
+    from config import BYBIT_API_KEY, BYBIT_API_SECRET
+    await update.message.reply_text(
+        f"🔍 <b>Debug Info:</b>\n\n"
+        f"API Key length: <b>{len(BYBIT_API_KEY)}</b>\n"
+        f"API Key: <code>{BYBIT_API_KEY[:4]}...{BYBIT_API_KEY[-4:]}</code>\n"
+        f"Secret length: <b>{len(BYBIT_API_SECRET)}</b>\n"
+        f"Secret: <code>{BYBIT_API_SECRET[:4]}...{BYBIT_API_SECRET[-4:]}</code>\n"
+        f"Secret has spaces: <b>{' ' in BYBIT_API_SECRET}</b>\n"
+        f"Secret has newline: <b>{chr(10) in BYBIT_API_SECRET or chr(13) in BYBIT_API_SECRET}</b>",
+        parse_mode=ParseMode.HTML)
 
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -378,7 +408,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (f"👑 <b>Admin Panel</b>\n\n💰 {balance:,.2f} USDT\n"
            f"📊 {stats['total']}t ({stats['wins']}W/{stats['losses']}L) PnL: {'+' if stats['total_pnl']>=0 else ''}{stats['total_pnl']}\n"
            f"📌 Ανοιχτά: {len(open_t)} | Pending: {len(pending)}\n\n"
-           f"/approve /reject /sync /forceclose")
+           f"/approve /reject /sync /forceclose /ip /debug")
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("📋 Pending", callback_data="AP"),
@@ -425,7 +455,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "📈 Open Trades": await open_trades_command(update, context)
     elif text == "ℹ️ Help":
         await update.message.reply_text(
-            f"ℹ️ <b>Help</b>\n\n/start /sync /forceclose\n📊 Stats 💰 Balance 📰 Sentiment 📈 Open\n\n"
+            f"ℹ️ <b>Help</b>\n\n/start /sync /forceclose /ip /debug\n📊 Stats 💰 Balance 📰 Sentiment 📈 Open\n\n"
             f"Settings: {DEFAULT_USDT} USDT / {DEFAULT_LEVERAGE}x | Dynamic TP | Max {MAX_DAILY_TRADES}/day",
             parse_mode=ParseMode.HTML)
     elif text == "👑 Admin Panel" and chat_id == ADMIN_CHAT_ID:
@@ -447,7 +477,7 @@ async def tradingview_handler(request: web.Request):
         sl_price = float(data.get("sl", 0)) or None
         app      = request.app["telegram_app"]
 
-        # ✅ CLOSE signals — κλείνει ανοιχτό trade αυτόματα
+        # ✅ CLOSE signals
         if side in ["CLOSE_LONG", "CLOSE_SHORT"]:
             close_side = "Buy" if side == "CLOSE_LONG" else "Sell"
             open_trades = await get_open_trades()
@@ -472,7 +502,7 @@ async def tradingview_handler(request: web.Request):
                         logger.info(f"Auto-close: {symbol} {result} {pnl_est}")
             return web.json_response({"status": "closed"})
 
-        # Normal LONG/SHORT signal
+        # Normal signal
         asyncio.create_task(
             handle_tradingview_webhook(symbol, side, score, app, tp_price, sl_price))
         return web.json_response({"status": "ok"})
@@ -498,6 +528,8 @@ async def main():
     application.add_handler(CommandHandler("reject",     reject_command))
     application.add_handler(CommandHandler("sync",       sync_command))
     application.add_handler(CommandHandler("forceclose", forceclose_command))
+    application.add_handler(CommandHandler("ip",         ip_command))
+    application.add_handler(CommandHandler("debug",      debug_command))
 
     application.add_handler(CallbackQueryHandler(subscribe_callback, pattern="^subscribe$"))
     application.add_handler(CallbackQueryHandler(approve_callback,   pattern="^(APPROVE|REJECT):"))
