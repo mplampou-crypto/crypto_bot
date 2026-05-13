@@ -244,6 +244,19 @@ async def get_expiring_subs(days_ahead: int = 1):
         await conn.close()
 
 
+async def get_expired_subs():
+    """Επιστρέφει users που έχει λήξει η συνδρομή τους"""
+    conn = await get_db()
+    try:
+        return await conn.fetch("""
+            SELECT * FROM users
+            WHERE is_subscribed = TRUE
+            AND sub_expires_at IS NOT NULL
+            AND sub_expires_at < NOW()
+        """)
+    finally:
+        await conn.close()
+
 
 # ─── TRADES ───────────────────────────────────────────────
 
