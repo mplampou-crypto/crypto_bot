@@ -45,10 +45,19 @@ async def _get(endpoint: str, params: dict = None, signed: bool = False):
     url       = f"{BASE_URL}{endpoint}"
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(url, params=params, headers=headers, timeout=10)
-            return resp.json()
+            resp = await client.get(url, params=params, headers=headers, timeout=30)
+            data = resp.json()
+            if data.get("retCode", 0) != 0:
+                print(f"[Bybit GET Error] {endpoint} → code={data.get('retCode')} msg={data.get('retMsg')}")
+            return data
+        except httpx.TimeoutException:
+            print(f"[Bybit GET TIMEOUT] {endpoint} — 30s timeout")
+            return None
+        except httpx.ConnectError as e:
+            print(f"[Bybit GET CONNECT ERROR] {endpoint} — {e}")
+            return None
         except Exception as e:
-            print(f"Bybit GET error: {e}")
+            print(f"[Bybit GET ERROR] {endpoint} — {type(e).__name__}: {e}")
             return None
 
 
@@ -59,10 +68,19 @@ async def _post(endpoint: str, params: dict = None, signed: bool = False):
     url      = f"{BASE_URL}{endpoint}"
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.post(url, content=body_str, headers=headers, timeout=10)
-            return resp.json()
+            resp = await client.post(url, content=body_str, headers=headers, timeout=30)
+            data = resp.json()
+            if data.get("retCode", 0) != 0:
+                print(f"[Bybit POST Error] {endpoint} → code={data.get('retCode')} msg={data.get('retMsg')}")
+            return data
+        except httpx.TimeoutException:
+            print(f"[Bybit POST TIMEOUT] {endpoint} — 30s timeout")
+            return None
+        except httpx.ConnectError as e:
+            print(f"[Bybit POST CONNECT ERROR] {endpoint} — {e}")
+            return None
         except Exception as e:
-            print(f"Bybit POST error: {e}")
+            print(f"[Bybit POST ERROR] {endpoint} — {type(e).__name__}: {e}")
             return None
 
 
@@ -95,7 +113,7 @@ def fix_symbol(symbol: str) -> str:
     """Διορθώνει double USDT: BTCUSDTUSDT → BTCUSDT"""
     symbol = symbol.upper().strip()
     if symbol.endswith("USDTUSDT"):
-        symbol = symbol[:-4]  # αφαιρεί το τελευταίο USDT
+        symbol = symbol[:-4]
     if not symbol.endswith("USDT"):
         symbol = symbol + "USDT"
     return symbol
@@ -124,7 +142,7 @@ async def set_leverage(symbol: str, leverage: int) -> bool:
     }, signed=True)
     if data and data.get("retCode") in [0, 110043]:
         return True
-    print(f"Set leverage error: {data}")
+    print(f"[Set leverage error] {data}")
     return False
 
 
@@ -136,7 +154,7 @@ async def place_order(symbol: str, side: str, usdt_amount: float,
     symbol = fix_symbol(symbol)
     current_price = await get_price(symbol)
     if current_price == 0:
-        return {"success": False, "error": "Δεν βρέθηκε τιμή"}
+        return {"success": False, "error": "Δεν βρέθηκε τιμή — Bybit δεν απάντησε"}
 
     await set_leverage(symbol, leverage)
 
@@ -149,14 +167,16 @@ async def place_order(symbol: str, side: str, usdt_amount: float,
     if qty <= 0:
         return {"success": False, "error": f"Qty πολύ μικρό για {symbol}"}
 
-    # SL / TP — dynamic αν δόθηκαν, αλλιώς fixed %
+    # SL / TP
     if sl_price and tp_price and float(sl_price) > 0 and float(tp_price) > 0:
         final_sl = round(float(sl_price), 4)
         final_tp = round(float(tp_price), 4)
         if side == "Buy" and (final_sl >= current_price or final_tp <= current_price):
+            print(f"[Order] Dynamic SL/TP invalid for Buy, using fallback %")
             final_sl = round(current_price * (1 - sl_pct / 100), 4)
             final_tp = round(current_price * (1 + tp_pct / 100), 4)
         elif side == "Sell" and (final_sl <= current_price or final_tp >= current_price):
+            print(f"[Order] Dynamic SL/TP invalid for Sell, using fallback %")
             final_sl = round(current_price * (1 + sl_pct / 100), 4)
             final_tp = round(current_price * (1 - tp_pct / 100), 4)
     else:
@@ -178,6 +198,8 @@ async def place_order(symbol: str, side: str, usdt_amount: float,
     pnl_tp = round(position_value * tp_pct_actual / 100, 2)
     pnl_sl = round(position_value * sl_pct_actual / 100, 2)
 
+    print(f"[Order] SL=${final_sl} TP=${final_tp} pnl_tp={pnl_tp} pnl_sl={pnl_sl}")
+
     data = await _post("/v5/order/create", {
         "category":       "linear",
         "symbol":         symbol,
@@ -194,6 +216,7 @@ async def place_order(symbol: str, side: str, usdt_amount: float,
     }, signed=True)
 
     if data and data.get("retCode") == 0:
+        print(f"[Order SUCCESS] {symbol} {side} orderId={data['result']['orderId']}")
         return {
             "success": True, "order_id": data["result"]["orderId"],
             "symbol": symbol, "side": side,
@@ -203,18 +226,18 @@ async def place_order(symbol: str, side: str, usdt_amount: float,
             "usdt_amount": usdt_amount,
             "expected_tp_pnl": pnl_tp, "expected_sl_loss": pnl_sl,
         }
+    elif data:
+        error_msg = f"code={data.get('retCode')} msg={data.get('retMsg', 'Unknown')}"
+        print(f"[Order FAILED] {symbol} {side} — {error_msg}")
+        return {"success": False, "error": data.get("retMsg", "Unknown")}
     else:
-        return {"success": False,
-                "error": data.get("retMsg", "Unknown") if data else "No response"}
+        print(f"[Order FAILED] {symbol} {side} — No response from Bybit (timeout/network)")
+        return {"success": False, "error": "No response — Bybit timeout/network error"}
 
 
 # ─── CLOSE POSITION AT MARKET ─────────────────────────────
 
 async def close_position_market(symbol: str, side: str, qty: float) -> bool:
-    """
-    Κλείνει θέση στο Bybit με market order.
-    Για LONG → πουλάμε (Sell), για SHORT → αγοράζουμε (Buy)
-    """
     symbol     = fix_symbol(symbol)
     close_side = "Sell" if side == "Buy" else "Buy"
 
@@ -229,10 +252,13 @@ async def close_position_market(symbol: str, side: str, qty: float) -> bool:
     }, signed=True)
 
     if data and data.get("retCode") == 0:
-        print(f"[Close] {symbol} {close_side} qty={qty} — OK")
+        print(f"[Close SUCCESS] {symbol} {close_side} qty={qty}")
         return True
+    elif data:
+        print(f"[Close FAILED] {symbol} — code={data.get('retCode')} msg={data.get('retMsg')}")
+        return False
     else:
-        print(f"[Close] Error: {data}")
+        print(f"[Close FAILED] {symbol} — No response (timeout/network)")
         return False
 
 
