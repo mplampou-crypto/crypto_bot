@@ -18,14 +18,11 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # --- TRADING DEFAULTS ---
-# 100 USDT × 50x = 5,000 USDT position
-# TP +1.0% → +50 USDT κέρδος
-# SL -0.5% → -25 USDT ζημιά
-# RR 1:2 → χρειάζεσαι μόνο 35% winrate για κέρδος
-DEFAULT_LEVERAGE  = 25
-DEFAULT_USDT      = 49
-DEFAULT_SL_PCT    = 1.0    # -50 USDT
-DEFAULT_TP_PCT    = 1.0    # +50 USDT
+# Χωρίς TP — το bot κλείνει μόνο όταν ο oscillator γυρίσει από 1.5
+# SL βασισμένο σε ATR (2x ATR από entry) για να μην χτυπάει νωρίς
+DEFAULT_LEVERAGE  = 19
+DEFAULT_USDT      = 21
+DEFAULT_SL_ATR_MULT = 2.0  # SL = entry ± (ATR * 2.0)
 
 MIN_SIGNAL_SCORE  = 75
 
@@ -44,8 +41,7 @@ SUBSCRIPTION_DAYS   = 30
 
 # --- TRADING PAIRS ---
 TRADING_PAIRS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT",
-    "BNBUSDT", "XRPUSDT", "DOGEUSDT",
+    "BTCUSDT", "ETHUSDT",
 ]
 
 # --- SENTIMENT KEYWORDS ---

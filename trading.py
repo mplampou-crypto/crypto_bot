@@ -6,7 +6,7 @@ import math
 import httpx
 from config import (
     BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_TESTNET,
-    DEFAULT_LEVERAGE, DEFAULT_USDT, DEFAULT_SL_PCT, DEFAULT_TP_PCT
+    DEFAULT_LEVERAGE, DEFAULT_USDT, DEFAULT_SL_ATR_MULT
 )
 
 BASE_URL = "https://api-testnet.bybit.com" if BYBIT_TESTNET else "https://api.bybit.com"
@@ -122,8 +122,40 @@ async def set_leverage(symbol, leverage):
     return data and data.get("retCode") in [0, 110043]
 
 
-async def place_order(symbol, side, usdt_amount, leverage, sl_pct, tp_pct,
-                      tp_price=None, sl_price=None):
+async def get_atr(symbol: str, interval: str = "240", period: int = 14) -> float:
+    """
+    Υπολογίζει ATR από τα τελευταία κεριά (interval=240 → 4ωρο).
+    Επιστρέφει ATR σε απόλυτη τιμή (π.χ. 450.0 για BTC).
+    """
+    data = await _get("/v5/market/kline", {
+        "category": "linear",
+        "symbol": symbol,
+        "interval": interval,
+        "limit": str(period + 1),
+    })
+    try:
+        candles = data["result"]["list"]
+        # Bybit επιστρέφει: [startTime, open, high, low, close, volume, turnover]
+        trs = []
+        for i in range(len(candles) - 1):
+            high  = float(candles[i][2])
+            low   = float(candles[i][3])
+            prev_close = float(candles[i + 1][4])
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            trs.append(tr)
+        if not trs:
+            return 0.0
+        return sum(trs) / len(trs)
+    except Exception as e:
+        print(f"[ATR Error] {symbol}: {e}")
+        return 0.0
+
+
+async def place_order(symbol, side, usdt_amount, leverage, sl_price=None):
+    """
+    Ανοίγει θέση χωρίς TP.
+    SL: αν δοθεί sl_price το χρησιμοποιεί, αλλιώς υπολογίζει 2x ATR από entry.
+    """
     symbol = fix_symbol(symbol)
     current_price = await get_price(symbol)
     if current_price == 0:
@@ -138,51 +170,59 @@ async def place_order(symbol, side, usdt_amount, leverage, sl_pct, tp_pct,
     if qty <= 0:
         return {"success": False, "error": f"Qty πολύ μικρό για {symbol}"}
 
-    if sl_price and tp_price and float(sl_price) > 0 and float(tp_price) > 0:
+    # ── SL Calculation ──
+    if sl_price and float(sl_price) > 0:
         final_sl = round(float(sl_price), 4)
-        final_tp = round(float(tp_price), 4)
-        if side == "Buy" and (final_sl >= current_price or final_tp <= current_price):
-            final_sl = round(current_price * (1 - sl_pct / 100), 4)
-            final_tp = round(current_price * (1 + tp_pct / 100), 4)
-        elif side == "Sell" and (final_sl <= current_price or final_tp >= current_price):
-            final_sl = round(current_price * (1 + sl_pct / 100), 4)
-            final_tp = round(current_price * (1 - tp_pct / 100), 4)
-    else:
+        # Έλεγχος λογικής
+        if side == "Buy" and final_sl >= current_price:
+            final_sl = None
+        elif side == "Sell" and final_sl <= current_price:
+            final_sl = None
+
+    if not sl_price or not final_sl:
+        # ATR-based SL
+        atr = await get_atr(symbol, interval="240", period=14)
+        if atr == 0:
+            atr = current_price * 0.015  # fallback: 1.5% αν ATR αποτύχει
+        sl_distance = atr * DEFAULT_SL_ATR_MULT
         if side == "Buy":
-            final_sl = round(current_price * (1 - sl_pct / 100), 4)
-            final_tp = round(current_price * (1 + tp_pct / 100), 4)
+            final_sl = round(current_price - sl_distance, 4)
         else:
-            final_sl = round(current_price * (1 + sl_pct / 100), 4)
-            final_tp = round(current_price * (1 - tp_pct / 100), 4)
+            final_sl = round(current_price + sl_distance, 4)
 
     if side == "Buy":
-        tp_pct_actual = (final_tp - current_price) / current_price * 100
         sl_pct_actual = (current_price - final_sl) / current_price * 100
     else:
-        tp_pct_actual = (current_price - final_tp) / current_price * 100
         sl_pct_actual = (final_sl - current_price) / current_price * 100
 
-    pnl_tp = round(position_value * tp_pct_actual / 100, 2)
     pnl_sl = round(position_value * sl_pct_actual / 100, 2)
 
     data = await _post("/v5/order/create", {
-        "category": "linear", "symbol": symbol, "side": side,
-        "orderType": "Market", "qty": str(qty),
-        "stopLoss": str(final_sl), "takeProfit": str(final_tp),
-        "timeInForce": "GoodTillCancel",
-        "reduceOnly": False, "closeOnTrigger": False,
-        "slTriggerBy": "LastPrice", "tpTriggerBy": "LastPrice",
+        "category":      "linear",
+        "symbol":        symbol,
+        "side":          side,
+        "orderType":     "Market",
+        "qty":           str(qty),
+        "stopLoss":      str(final_sl),
+        "timeInForce":   "GoodTillCancel",
+        "reduceOnly":    False,
+        "closeOnTrigger": False,
+        "slTriggerBy":   "LastPrice",
     }, signed=True)
 
     if data and data.get("retCode") == 0:
         return {
-            "success": True, "order_id": data["result"]["orderId"],
-            "symbol": symbol, "side": side,
-            "entry_price": current_price,
-            "sl_price": final_sl, "tp_price": final_tp,
-            "qty": qty, "leverage": leverage,
-            "usdt_amount": usdt_amount,
-            "expected_tp_pnl": pnl_tp, "expected_sl_loss": pnl_sl,
+            "success":           True,
+            "order_id":          data["result"]["orderId"],
+            "symbol":            symbol,
+            "side":              side,
+            "entry_price":       current_price,
+            "sl_price":          final_sl,
+            "tp_price":          None,
+            "qty":               qty,
+            "leverage":          leverage,
+            "usdt_amount":       usdt_amount,
+            "expected_sl_loss":  pnl_sl,
         }
     else:
         return {"success": False,
@@ -278,10 +318,9 @@ def format_trade_message(trade):
         f"Pair: <b>{coin}/USDT</b>\nΚατεύθυνση: <b>{side_emoji}</b>\n"
         f"Entry: <b>${trade['entry_price']:,.4f}</b>\n"
         f"Stop Loss: <b>${trade['sl_price']:,.4f}</b>\n"
-        f"Take Profit: <b>${trade['tp_price']:,.4f}</b>\n"
+        f"Exit: <b>Oscillator Signal (auto)</b>\n"
         f"Leverage: <b>{trade['leverage']}x</b> | Margin: <b>{trade['usdt_amount']} USDT</b>\n\n"
-        f"💰 TP: <b>+{trade['expected_tp_pnl']:.1f} USDT</b>\n"
-        f"⛔ SL: <b>-{trade['expected_sl_loss']:.1f} USDT</b>"
+        f"⛔ Max Loss: <b>-{trade['expected_sl_loss']:.1f} USDT</b>"
     )
 
 

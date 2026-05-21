@@ -14,9 +14,10 @@ from telegram.constants import ParseMode
 
 from config import (
     TELEGRAM_BOT_TOKEN, ADMIN_CHAT_ID,
-    DEFAULT_LEVERAGE, DEFAULT_USDT, DEFAULT_SL_PCT, DEFAULT_TP_PCT,
+    DEFAULT_LEVERAGE, DEFAULT_USDT,
     MIN_SIGNAL_SCORE, PAYSAFE_CODE_LENGTH, SUBSCRIPTION_PRICE,
-    SUBSCRIPTION_DAYS, MAX_DAILY_TRADES, MAX_CONSECUTIVE_LOSSES
+    SUBSCRIPTION_DAYS, MAX_DAILY_TRADES, MAX_CONSECUTIVE_LOSSES,
+    TRADING_PAIRS
 )
 from database import (
     init_db, get_user, create_user, is_subscribed, get_sub_expiry,
@@ -257,10 +258,9 @@ async def open_trades_command(update, context):
         else:
             pnl = round((t["entry_price"] - cur) / t["entry_price"] * 100 * t["leverage"] * t["usdt_amount"] / 100, 2)
         e = "🟢" if t["side"]=="Buy" else "🔴"
-        be = " 🛡️" if t["id"] in _breakeven_done else ""
-        msg += (f"{e} <b>{t['symbol'].replace('USDT','')}</b>{be}\n"
+        msg += (f"{e} <b>{t['symbol'].replace('USDT','')}</b>\n"
                 f"  Entry: ${t['entry_price']:,.4f} → Now: ${cur:,.4f}\n"
-                f"  SL: ${t['sl_price']:,.4f} | TP: ${t['tp_price']:,.4f}\n"
+                f"  SL: ${t['sl_price']:,.4f} | Exit: Oscillator Signal\n"
                 f"  PnL: <b>{'+' if pnl>=0 else ''}{pnl} USDT</b>\n\n")
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -388,50 +388,44 @@ async def check_expiring_subs(application):
 async def handle_tradingview_webhook(symbol, side, score, application, tp_price=None, sl_price=None):
     symbol = fix_symbol(symbol)
 
+    # ── Φιλτράρισμα: μόνο BTC και ETH ──
+    if symbol not in TRADING_PAIRS:
+        logger.info(f"Signal ignored — {symbol} not in TRADING_PAIRS")
+        return
+
     if score < MIN_SIGNAL_SCORE:
         await save_rejected_signal(symbol, side, score, f"Score {score} < {MIN_SIGNAL_SCORE}")
         await application.bot.send_message(ADMIN_CHAT_ID,
             format_rejected_message(symbol, side, score, f"Score {score} < {MIN_SIGNAL_SCORE}"), parse_mode=ParseMode.HTML)
         return
 
-    # ★ ΝΕΟ: Αν υπάρχει ήδη ανοιχτό trade στην ίδια κατεύθυνση → UPDATE TP/SL
     open_trades = await get_open_trades()
     side_bybit = "Buy" if side.upper() == "LONG" else "Sell"
 
+    # Αν υπάρχει ήδη ανοιχτό trade στην ίδια κατεύθυνση → UPDATE SL μόνο (χωρίς TP)
     existing = next((t for t in open_trades
                      if fix_symbol(t["symbol"]) == symbol and t["side"] == side_bybit), None)
 
-    if existing and tp_price and sl_price:
-        # Update υπάρχοντος trade με νέο TP/SL
-        ok = await update_position_tp_sl(symbol,
-                                         tp_price=tp_price,
-                                         sl_price=sl_price if existing["id"] not in _breakeven_done else None)
+    if existing and sl_price:
+        ok = await update_position_tp_sl(symbol, sl_price=sl_price)
         if ok:
-            # Update DB
             import asyncpg
             from config import DATABASE_URL
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                if existing["id"] in _breakeven_done:
-                    await conn.execute("UPDATE trades SET tp_price=$1 WHERE id=$2",
-                                       float(tp_price), existing["id"])
-                else:
-                    await conn.execute("UPDATE trades SET tp_price=$1, sl_price=$2 WHERE id=$3",
-                                       float(tp_price), float(sl_price), existing["id"])
+                await conn.execute("UPDATE trades SET sl_price=$1 WHERE id=$2",
+                                   float(sl_price), existing["id"])
             finally:
                 await conn.close()
-
             await broadcast(application,
-                f"🔄 <b>Trade Updated!</b>\n\n"
+                f"🔄 <b>SL Updated!</b>\n\n"
                 f"Pair: <b>{symbol.replace('USDT','')}</b> {'LONG' if side_bybit=='Buy' else 'SHORT'}\n"
-                f"Νέο TP: <b>${float(tp_price):,.4f}</b>\n"
-                + (f"Νέο SL: <b>${float(sl_price):,.4f}</b>" if existing["id"] not in _breakeven_done
-                   else f"SL: <b>στο entry (breakeven)</b>"))
-            logger.info(f"Trade updated: {symbol} new TP={tp_price}")
+                f"Νέο SL: <b>${float(sl_price):,.4f}</b>")
+            logger.info(f"SL updated: {symbol} new SL={sl_price}")
         else:
             await application.bot.send_message(ADMIN_CHAT_ID,
-                f"⚠️ Update TP/SL απέτυχε για {symbol}", parse_mode=ParseMode.HTML)
-        return  # Δεν ανοίγουμε νέο trade — απλά update
+                f"⚠️ Update SL απέτυχε για {symbol}", parse_mode=ParseMode.HTML)
+        return
 
     # Αν υπάρχει ανοιχτό trade στην ΑΝΤΙΘΕΤΗ κατεύθυνση → skip
     opposite = next((t for t in open_trades
@@ -458,17 +452,20 @@ async def handle_tradingview_webhook(symbol, side, score, application, tp_price=
         await broadcast(application, format_rejected_message(symbol, side, score, "Bullish sentiment"))
         return
 
+    # ── Place Order χωρίς TP ──
     result = await place_order(symbol, side_bybit, DEFAULT_USDT, DEFAULT_LEVERAGE,
-                               DEFAULT_SL_PCT, DEFAULT_TP_PCT, tp_price=tp_price, sl_price=sl_price)
+                               sl_price=sl_price)
 
     if result["success"]:
-        await save_trade(symbol, side_bybit, result["entry_price"], result["sl_price"], result["tp_price"],
+        await save_trade(symbol, side_bybit, result["entry_price"], result["sl_price"],
+                         None,  # tp_price = None
                          DEFAULT_LEVERAGE, DEFAULT_USDT, result["qty"], result["order_id"], score, "TradingView")
         await broadcast(application, format_trade_message(result))
         logger.info(f"Trade: {symbol} {side_bybit} score={score}")
     else:
         await application.bot.send_message(ADMIN_CHAT_ID,
             f"❌ <b>Trade failed</b>\n{symbol} {side_bybit}\n<code>{result.get('error')}</code>",
+            parse_mode=ParseMode.HTML)
             parse_mode=ParseMode.HTML)
 
 
@@ -635,7 +632,6 @@ async def main():
 
     # Background tasks
     asyncio.create_task(monitor_closed_trades(application))
-    asyncio.create_task(monitor_breakeven(application))         # ✅ ΝΕΟ
     asyncio.create_task(check_expiring_subs(application))
 
     try: await asyncio.Event().wait()
