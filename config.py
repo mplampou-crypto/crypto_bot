@@ -20,8 +20,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # --- TRADING DEFAULTS ---
 # Χωρίς TP — το bot κλείνει μόνο όταν ο oscillator γυρίσει από 1.5
 # SL βασισμένο σε ATR (2x ATR από entry) για να μην χτυπάει νωρίς
-DEFAULT_LEVERAGE  = 19
-DEFAULT_USDT      = 21
+DEFAULT_LEVERAGE  = 75
+DEFAULT_USDT      = 15
 DEFAULT_SL_ATR_MULT = 2.0  # SL = entry ± (ATR * 2.0)
 
 MIN_SIGNAL_SCORE  = 75
