@@ -466,8 +466,7 @@ async def handle_tradingview_webhook(symbol, side, score, application, tp_price=
         await application.bot.send_message(ADMIN_CHAT_ID,
             f"❌ <b>Trade failed</b>\n{symbol} {side_bybit}\n<code>{result.get('error')}</code>",
             parse_mode=ParseMode.HTML)
-            parse_mode=ParseMode.HTML)
-
+            
 
 # ─── ADMIN PANEL ──────────────────────────────────────────
 
