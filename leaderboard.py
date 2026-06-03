@@ -18,6 +18,8 @@ import asyncio
 import aiohttp
 import json
 import logging
+import traceback
+import ssl
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
@@ -99,8 +101,17 @@ class BybitLeaderboard:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=10)
-            self._session = aiohttp.ClientSession(headers=HEADERS, timeout=timeout)
+            timeout = aiohttp.ClientTimeout(total=15)
+            # SSL context για Railway/Docker environments
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+            self._session = aiohttp.ClientSession(
+                headers=HEADERS,
+                timeout=timeout,
+                connector=connector
+            )
         return self._session
 
     async def close(self):
@@ -152,7 +163,7 @@ class BybitLeaderboard:
             return self._traders_cache  # επιστρέφουμε cached αν έχουμε
 
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected error fetching traders: {e!r}\n{traceback.format_exc()}")
             return []
 
     # ── Fetch positions για έναν trader ──────────────────────────────────────
@@ -201,7 +212,7 @@ class BybitLeaderboard:
             return self._positions_cache.get(uid, [])
 
         except Exception as e:
-            logger.error(f"Unexpected error for uid {uid}: {e}")
+            logger.error(f"Unexpected error for uid {uid}: {e!r}\n{traceback.format_exc()}")
             return []
 
     # ── Fetch positions για όλους τους tracked traders ────────────────────────
