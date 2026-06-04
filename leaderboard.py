@@ -246,6 +246,8 @@ class HyperliquidFetcher:
                     unrealised_pnl=float(pos.get("unrealizedPnl", 0)),
                     created_time=datetime.now(),
                     platform="hyperliquid",
+                    take_profit=float(pos.get("maxTradeSzs", [0, 0])[0] if isinstance(pos.get("maxTradeSzs"), list) else 0),
+                    stop_loss=float(pos.get("liquidationPx", 0) or 0),
                 ))
             return positions
         except Exception as e:
