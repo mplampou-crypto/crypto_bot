@@ -140,7 +140,7 @@ class BinanceFetcher:
         try:
             connector = aiohttp.TCPConnector(ssl=_make_ssl_ctx())
             async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     data = await resp.json()
 
             positions = []
@@ -181,7 +181,7 @@ class OKXFetcher:
                 async with session.get(
                     url,
                     params={"uniqueCode": uid},
-                    timeout=aiohttp.ClientTimeout(total=15)
+                    timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     data = await resp.json()
 
@@ -219,14 +219,28 @@ class HyperliquidFetcher:
         url = f"{self.BASE}/info"
         payload = {"type": "clearinghouseState", "user": address}
         headers = {"Content-Type": "application/json"}
+        for attempt in range(3):  # 3 προσπάθειες
+            try:
+                connector = aiohttp.TCPConnector(ssl=_make_ssl_ctx())
+                async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+                    async with session.post(
+                        url, json=payload, timeout=aiohttp.ClientTimeout(total=30)
+                    ) as resp:
+                        data = await resp.json()
+                break  # επιτυχία, βγες από το loop
+            except asyncio.TimeoutError:
+                logger.warning(f"[Hyperliquid] Timeout attempt {attempt+1}/3 για {address}")
+                if attempt == 2:
+                    return []
+                await asyncio.sleep(2)
+                continue
+            except Exception as e:
+                logger.error(f"[Hyperliquid] Error attempt {attempt+1}/3: {e!r}")
+                if attempt == 2:
+                    return []
+                await asyncio.sleep(2)
+                continue
         try:
-            connector = aiohttp.TCPConnector(ssl=_make_ssl_ctx())
-            async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
-                async with session.post(
-                    url, json=payload, timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
-                    data = await resp.json()
-
             positions = []
             for item in data.get("assetPositions", []):
                 pos = item.get("position", {})
