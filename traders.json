@@ -1,7 +1,11 @@
 {
-  "bybit": ["152277343"],
+  "hyperliquid": [
+    "0xd6e56265890b76413d1d527eb9b75e334c0c5b42",
+    "0xfb941d2344b72ea9101400392b818173772d0ddf",
+    "0xdfe5195e7cc1a2eca9b0df09d4646472a8c4a402"
+  ],
+  "bybit": [],
   "binance": [],
   "okx": [],
-  "hyperliquid": [],
   "blacklist": ["DOGEUSDT", "SHIBUSDT", "PEPEUSDT", "FLOKIUSDT"]
 }
