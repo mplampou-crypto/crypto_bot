@@ -209,37 +209,44 @@ class OKXFetcher:
 
 
 class HyperliquidFetcher:
-    BASE = "https://api.hyperliquid.xyz"
+    ENDPOINTS = [
+        "https://api.hyperliquid.xyz/info",
+        "https://api-ui.hyperliquid.xyz/info",
+    ]
 
     async def get_positions(self, address: str) -> list[Position]:
-        """
-        Fetches open positions of a Hyperliquid wallet address.
-        100% on-chain public API — δουλεύει από οποιοδήποτε server.
-        """
-        url = f"{self.BASE}/info"
         payload = {"type": "clearinghouseState", "user": address}
-        headers = {"Content-Type": "application/json"}
-        for attempt in range(3):  # 3 προσπάθειες
-            try:
-                connector = aiohttp.TCPConnector(ssl=_make_ssl_ctx())
-                async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
-                    async with session.post(
-                        url, json=payload, timeout=aiohttp.ClientTimeout(total=30)
-                    ) as resp:
-                        data = await resp.json()
-                break  # επιτυχία, βγες από το loop
-            except asyncio.TimeoutError:
-                logger.warning(f"[Hyperliquid] Timeout attempt {attempt+1}/3 για {address}")
-                if attempt == 2:
-                    return []
-                await asyncio.sleep(2)
-                continue
-            except Exception as e:
-                logger.error(f"[Hyperliquid] Error attempt {attempt+1}/3: {e!r}")
-                if attempt == 2:
-                    return []
-                await asyncio.sleep(2)
-                continue
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; CopyBot/1.0)",
+        }
+        data = None
+        for url in self.ENDPOINTS:
+            for attempt in range(2):
+                try:
+                    connector = aiohttp.TCPConnector(ssl=_make_ssl_ctx(), limit=10)
+                    async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+                        async with session.post(
+                            url, json=payload,
+                            timeout=aiohttp.ClientTimeout(total=45, connect=10, sock_read=35)
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                logger.info(f"[Hyperliquid] OK via {url.split('/')[2]}")
+                                break
+                    if data is not None:
+                        break
+                except asyncio.TimeoutError:
+                    logger.warning(f"[Hyperliquid] Timeout {url} attempt {attempt+1}")
+                    await asyncio.sleep(3)
+                except Exception as e:
+                    logger.warning(f"[Hyperliquid] {url} attempt {attempt+1}: {e!r}")
+                    await asyncio.sleep(3)
+            if data is not None:
+                break
+        if data is None:
+            logger.error(f"[Hyperliquid] Όλα τα endpoints απέτυχαν για {address}")
+            return []
         try:
             positions = []
             for item in data.get("assetPositions", []):
