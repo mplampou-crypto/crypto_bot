@@ -1,10 +1,10 @@
 """
 executor.py
 -----------
-Ανοίγει και κλείνει θέσεις στο Bybit του χρήστη
-βάσει των events που βρίσκει ο detector.
-
-Χρησιμοποιεί το επίσημο pybit SDK.
+Ανοίγει και κλείνει θέσεις στο Bybit του χρήστη.
+- Σταθερό ποσό: FIXED_POSITION_USDT (π.χ. $9)
+- Σταθερό leverage: FIXED_LEVERAGE (π.χ. 50x)
+- TP/SL: αντιγράφεται από τον trader αν υπάρχει
 """
 
 import logging
@@ -13,7 +13,8 @@ from pybit.unified_trading import HTTP
 from detector import TradeEvent, EventType
 from config import (
     BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_TESTNET,
-    COPY_RATIO, MAX_POSITION_USDT, STOP_LOSS_PCT
+    FIXED_POSITION_USDT, FIXED_LEVERAGE,
+    COPY_TP_SL, FALLBACK_STOP_LOSS_PCT
 )
 
 logger = logging.getLogger(__name__)
@@ -30,15 +31,11 @@ class OrderResult:
 
     def __str__(self):
         if self.success:
-            return f"✅ Order OK — {self.symbol} {self.side} {self.size} (id: {self.order_id})"
-        return f"❌ Order FAILED — {self.error}"
+            return f"✅ {self.symbol} {self.side} {self.size} (id: {self.order_id})"
+        return f"❌ FAILED — {self.error}"
 
 
 class Executor:
-    """
-    Συνδέεται με το Bybit API του χρήστη
-    και εκτελεί orders βάσει των trade events.
-    """
 
     def __init__(self):
         self.client = HTTP(
@@ -48,10 +45,9 @@ class Executor:
         )
         self._balance_cache: float = 0.0
 
-    # ── Βοηθητικές συναρτήσεις ───────────────────────────────────────────────
+    # ── Balance ───────────────────────────────────────────────────────────────
 
     def get_balance(self) -> float:
-        """Επιστρέφει το διαθέσιμο USDT balance."""
         try:
             resp = self.client.get_wallet_balance(
                 accountType="UNIFIED", coin="USDT"
@@ -62,11 +58,12 @@ class Executor:
             self._balance_cache = balance
             return balance
         except Exception as e:
-            logger.error(f"Αδύνατη λήψη balance: {e}")
+            logger.error(f"Balance error: {e}")
             return self._balance_cache
 
+    # ── Min qty ───────────────────────────────────────────────────────────────
+
     def get_min_qty(self, symbol: str) -> float:
-        """Παίρνει το ελάχιστο επιτρεπτό size για ένα symbol."""
         try:
             resp = self.client.get_instruments_info(
                 category="linear", symbol=symbol
@@ -74,95 +71,115 @@ class Executor:
             lot_filter = resp["result"]["list"][0]["lotSizeFilter"]
             return float(lot_filter["minOrderQty"])
         except Exception:
-            return 0.001  # safe default
+            return 0.001
 
-    def calculate_size(self, event: TradeEvent) -> float:
+    def get_qty_step(self, symbol: str) -> float:
+        """Παίρνει το qtyStep για σωστή στρογγυλοποίηση."""
+        try:
+            resp = self.client.get_instruments_info(
+                category="linear", symbol=symbol
+            )
+            lot_filter = resp["result"]["list"][0]["lotSizeFilter"]
+            return float(lot_filter["qtyStep"])
+        except Exception:
+            return 0.001
+
+    # ── Size calculation ──────────────────────────────────────────────────────
+
+    def calculate_size(self, symbol: str, entry_price: float) -> float:
         """
-        Υπολογίζει το size της δικής μας θέσης.
-
-        Λογική:
-          - Παίρνουμε COPY_RATIO% του balance μας
-          - Δεν ξεπερνάμε MAX_POSITION_USDT
-          - Δεν πηγαίνουμε κάτω από min_qty του symbol
+        Υπολογίζει size βάσει FIXED_POSITION_USDT και FIXED_LEVERAGE.
+        $9 με 50x leverage = $450 notional value
+        size = (FIXED_POSITION_USDT * FIXED_LEVERAGE) / entry_price
         """
-        balance = self.get_balance()
-        p = event.position
+        if entry_price <= 0:
+            return self.get_min_qty(symbol)
 
-        # Αξία σε USDT που θέλουμε να ρισκάρουμε
-        usdt_amount = min(balance * COPY_RATIO, MAX_POSITION_USDT)
+        notional = FIXED_POSITION_USDT * FIXED_LEVERAGE
+        size = notional / entry_price
 
-        # Μετατροπή σε contracts
-        if p.entry_price > 0:
-            size = usdt_amount / p.entry_price
-        else:
-            size = 0.001
-
-        # Στρογγυλοποίηση στα 3 δεκαδικά
-        size = round(size, 3)
+        # Στρογγυλοποίηση στο σωστό qtyStep
+        step = self.get_qty_step(symbol)
+        size = round(round(size / step) * step, 8)
 
         # Έλεγχος min qty
-        min_qty = self.get_min_qty(p.symbol)
+        min_qty = self.get_min_qty(symbol)
         if size < min_qty:
-            logger.warning(
-                f"{p.symbol}: size {size} < min {min_qty}, "
-                f"χρησιμοποιούμε min"
-            )
+            logger.warning(f"{symbol}: size {size} < min {min_qty}, χρησιμοποιούμε min")
             size = min_qty
 
         logger.info(
-            f"Size calculation: balance={balance:.0f} USDT, "
-            f"ratio={COPY_RATIO}, amount={usdt_amount:.0f} USDT, "
-            f"size={size} {p.symbol}"
+            f"Size: {FIXED_POSITION_USDT} USDT x {FIXED_LEVERAGE}x = "
+            f"{notional} notional / {entry_price} = {size} {symbol}"
         )
         return size
 
-    def _set_leverage(self, symbol: str, leverage: int):
-        """Ορίζει leverage για ένα symbol."""
+    # ── Leverage ──────────────────────────────────────────────────────────────
+
+    def _set_leverage(self, symbol: str):
+        """Βάζει FIXED_LEVERAGE για το symbol."""
         try:
             self.client.set_leverage(
                 category="linear",
                 symbol=symbol,
-                buyLeverage=str(leverage),
-                sellLeverage=str(leverage),
+                buyLeverage=str(FIXED_LEVERAGE),
+                sellLeverage=str(FIXED_LEVERAGE),
             )
+            logger.info(f"Leverage {FIXED_LEVERAGE}x set για {symbol}")
         except Exception as e:
-            # Συχνά επιστρέφει error αν το leverage είναι ήδη σωστό
             if "leverage not modified" not in str(e).lower():
                 logger.warning(f"Set leverage warning για {symbol}: {e}")
 
-    # ── Άνοιγμα θέσης ────────────────────────────────────────────────────────
+    # ── Open position ─────────────────────────────────────────────────────────
 
     def open_position(self, event: TradeEvent) -> OrderResult:
-        """
-        Ανοίγει θέση βάσει OPEN event.
-        Βάζει αυτόματα stop-loss αν ο trader δεν έχει βάλει.
-        """
         p = event.position
 
         try:
-            size = self.calculate_size(event)
-            self._set_leverage(p.symbol, p.leverage)
+            size = self.calculate_size(p.symbol, p.entry_price)
+            self._set_leverage(p.symbol)
 
-            # Stop loss price
-            if p.side == "Buy":
-                sl_price = round(p.entry_price * (1 - STOP_LOSS_PCT), 2)
-            else:
-                sl_price = round(p.entry_price * (1 + STOP_LOSS_PCT), 2)
+            # TP/SL από τον trader ή fallback
+            order_params = {
+                "category": "linear",
+                "symbol": p.symbol,
+                "side": p.side,
+                "orderType": "Market",
+                "qty": str(size),
+                "timeInForce": "IOC",
+            }
 
-            resp = self.client.place_order(
-                category="linear",
-                symbol=p.symbol,
-                side=p.side,           # "Buy" ή "Sell"
-                orderType="Market",
-                qty=str(size),
-                stopLoss=str(sl_price),
-                slTriggerBy="MarkPrice",
-                timeInForce="IOC",
-            )
+            if COPY_TP_SL:
+                # Αντιγράφουμε SL από τον trader αν υπάρχει
+                if hasattr(p, 'stop_loss') and p.stop_loss and p.stop_loss > 0:
+                    order_params["stopLoss"] = str(p.stop_loss)
+                    order_params["slTriggerBy"] = "MarkPrice"
+                    logger.info(f"Copying SL from trader: {p.stop_loss}")
+                else:
+                    # Fallback SL
+                    if p.side == "Buy":
+                        sl = round(p.entry_price * (1 - FALLBACK_STOP_LOSS_PCT), 2)
+                    else:
+                        sl = round(p.entry_price * (1 + FALLBACK_STOP_LOSS_PCT), 2)
+                    order_params["stopLoss"] = str(sl)
+                    order_params["slTriggerBy"] = "MarkPrice"
+                    logger.info(f"Fallback SL: {sl}")
+
+                # Αντιγράφουμε TP από τον trader αν υπάρχει
+                if hasattr(p, 'take_profit') and p.take_profit and p.take_profit > 0:
+                    order_params["takeProfit"] = str(p.take_profit)
+                    order_params["tpTriggerBy"] = "MarkPrice"
+                    logger.info(f"Copying TP from trader: {p.take_profit}")
+
+            resp = self.client.place_order(**order_params)
 
             if resp["retCode"] == 0:
                 order_id = resp["result"]["orderId"]
-                logger.info(f"✅ OPEN {p.symbol} {p.side} size={size} sl={sl_price}")
+                logger.info(
+                    f"✅ OPEN {p.symbol} {p.side} | "
+                    f"size={size} | {FIXED_LEVERAGE}x | "
+                    f"margin={FIXED_POSITION_USDT} USDT"
+                )
                 return OrderResult(
                     success=True,
                     order_id=order_id,
@@ -176,21 +193,16 @@ class Executor:
                 return OrderResult(success=False, symbol=p.symbol, error=err)
 
         except Exception as e:
-            logger.error(f"❌ Exception κατά open_position: {e}")
+            logger.error(f"❌ Exception open_position: {e}")
             return OrderResult(success=False, symbol=p.symbol, error=str(e))
 
-    # ── Κλείσιμο θέσης ───────────────────────────────────────────────────────
+    # ── Close position ────────────────────────────────────────────────────────
 
     def close_position(self, event: TradeEvent) -> OrderResult:
-        """
-        Κλείνει τη θέση μας για το συγκεκριμένο symbol.
-        Χρησιμοποιεί reduceOnly=True για ασφάλεια.
-        """
         p = event.position
         close_side = "Sell" if p.side == "Buy" else "Buy"
 
         try:
-            # Βρίσκουμε το τρέχον size της δικής μας θέσης
             resp = self.client.get_positions(
                 category="linear", symbol=p.symbol
             )
@@ -202,10 +214,9 @@ class Executor:
                     break
 
             if our_size == 0:
-                logger.warning(f"Δεν βρέθηκε ανοιχτή θέση για {p.symbol}")
+                logger.warning(f"Δεν βρέθηκε θέση για {p.symbol}")
                 return OrderResult(
-                    success=False,
-                    symbol=p.symbol,
+                    success=False, symbol=p.symbol,
                     error="Δεν υπάρχει ανοιχτή θέση"
                 )
 
@@ -223,11 +234,8 @@ class Executor:
                 order_id = resp["result"]["orderId"]
                 logger.info(f"✅ CLOSE {p.symbol} size={our_size}")
                 return OrderResult(
-                    success=True,
-                    order_id=order_id,
-                    symbol=p.symbol,
-                    side=close_side,
-                    size=our_size,
+                    success=True, order_id=order_id,
+                    symbol=p.symbol, side=close_side, size=our_size,
                 )
             else:
                 err = resp["retMsg"]
@@ -235,26 +243,16 @@ class Executor:
                 return OrderResult(success=False, symbol=p.symbol, error=err)
 
         except Exception as e:
-            logger.error(f"❌ Exception κατά close_position: {e}")
+            logger.error(f"❌ Exception close_position: {e}")
             return OrderResult(success=False, symbol=p.symbol, error=str(e))
 
-    # ── Κύρια συνάρτηση — χειρίζεται κάθε event ──────────────────────────────
+    # ── Handle event ──────────────────────────────────────────────────────────
 
     def handle_event(self, event: TradeEvent) -> OrderResult | None:
-        """
-        Δέχεται ένα TradeEvent και εκτελεί την κατάλληλη ενέργεια.
-        Επιστρέφει None για SCALE events (δεν κάνουμε τίποτα προς το παρόν).
-        """
         if event.event_type == EventType.OPEN:
             return self.open_position(event)
-
         elif event.event_type == EventType.CLOSE:
             return self.close_position(event)
-
         elif event.event_type == EventType.SCALE:
-            # TODO: προαιρετικά scale και εμείς
-            logger.info(
-                f"SCALE event για {event.position.symbol} — "
-                f"δεν κάνουμε ενέργεια προς το παρόν"
-            )
+            logger.info(f"SCALE event για {event.position.symbol} — παράλειψη")
             return None
