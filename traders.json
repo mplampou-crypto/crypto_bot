@@ -1,0 +1,7 @@
+{
+  "bybit": [],
+  "binance": [],
+  "okx": [],
+  "hyperliquid": [],
+  "blacklist": ["DOGEUSDT", "SHIBUSDT", "PEPEUSDT", "FLOKIUSDT"]
+}
