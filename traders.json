@@ -1,0 +1,47 @@
+{
+  "symbols": {
+    "BTCUSDT": { "leverage": 50 },
+    "ETHUSDT": { "leverage": 50 },
+    "SOLUSDT": { "leverage": 50 },
+    "XRPUSDT": { "leverage": 50 },
+    "DOGEUSDT": { "leverage": 50 }
+  },
+
+  "traders": {
+    "hull_btc": {
+      "enabled": true,
+      "symbol": "BTCUSDT",
+      "size_usdt": 200,
+      "description": "Hull Market Structure on BTC. Long on bullish CHoCH, short on bearish, flip on opposite signal.",
+      "backtest_win_rate": "-"
+    },
+    "hull_eth": {
+      "enabled": true,
+      "symbol": "ETHUSDT",
+      "size_usdt": 200,
+      "description": "Hull Market Structure on ETH. Long on bullish CHoCH, short on bearish, flip on opposite signal.",
+      "backtest_win_rate": "-"
+    },
+    "hull_sol": {
+      "enabled": true,
+      "symbol": "SOLUSDT",
+      "size_usdt": 200,
+      "description": "Hull Market Structure on SOL. Long on bullish CHoCH, short on bearish, flip on opposite signal.",
+      "backtest_win_rate": "-"
+    },
+    "hull_xrp": {
+      "enabled": true,
+      "symbol": "XRPUSDT",
+      "size_usdt": 200,
+      "description": "Hull Market Structure on XRP. Long on bullish CHoCH, short on bearish, flip on opposite signal.",
+      "backtest_win_rate": "-"
+    },
+    "hull_doge": {
+      "enabled": true,
+      "symbol": "DOGEUSDT",
+      "size_usdt": 200,
+      "description": "Hull Market Structure on DOGE. Long on bullish CHoCH, short on bearish, flip on opposite signal.",
+      "backtest_win_rate": "-"
+    }
+  }
+}
