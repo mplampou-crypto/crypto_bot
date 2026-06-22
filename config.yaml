@@ -1,0 +1,86 @@
+# ════════════════════════════════════════════════════════════════
+#  CONFIG  —  edit this file to add / enable / disable strategies.
+#  No code changes needed. Restart the bot after editing.
+# ════════════════════════════════════════════════════════════════
+
+# Global taker fee per side (Bybit linear ~0.055%). Used so the
+# win-rate / PnL on the dashboard accounts for fees (entry + exit).
+taker_fee: 0.00055
+
+# ── Symbols ─────────────────────────────────────────────────────
+# Leverage is set PER SYMBOL on Bybit (affects margin, not size).
+# The bot puts each symbol into One-Way mode on startup.
+# (If a symbol's max leverage is below this, Bybit rejects it and the
+#  bot logs a warning — the leverage just stays at its current value.)
+symbols:
+  BTCUSDT:
+    leverage: 50
+  ETHUSDT:
+    leverage: 50
+  SOLUSDT:
+    leverage: 50
+  XRPUSDT:
+    leverage: 50
+  DOGEUSDT:
+    leverage: 50
+
+# ── Strategies ──────────────────────────────────────────────────
+# Each block = one strategy. The KEY (e.g. "hull_btc") is the name you
+# put in the TradingView alert JSON  ->  "strategy": "hull_btc".
+#
+#   enabled            true/false  -> turn following on/off
+#   symbol             which market it trades (must exist above)
+#   position_size_usdt notional size in USDT (qty = this / price).
+#                      With 50x leverage, margin used = this / 50.
+#   description        free text: how it trades (shown on dashboard)
+#   backtest_win_rate  YOUR own note from backtesting (shown on dashboard)
+#
+# One Hull strategy per coin below, so each coin has its own clean
+# win-rate on the dashboard. Disable any you don't want (enabled: false).
+
+strategies:
+
+  hull_btc:
+    enabled: true
+    symbol: BTCUSDT
+    position_size_usdt: 19
+    description: >
+      Hull Market Structure on BTC. Long on bullish CHoCH, short on
+      bearish CHoCH, flip on opposite signal.
+    backtest_win_rate: "—"
+
+  hull_eth:
+    enabled: true
+    symbol: ETHUSDT
+    position_size_usdt: 19
+    description: >
+      Hull Market Structure on ETH. Long on bullish CHoCH, short on
+      bearish CHoCH, flip on opposite signal.
+    backtest_win_rate: "—"
+
+  hull_sol:
+    enabled: true
+    symbol: SOLUSDT
+    position_size_usdt: 19
+    description: >
+      Hull Market Structure on SOL. Long on bullish CHoCH, short on
+      bearish CHoCH, flip on opposite signal.
+    backtest_win_rate: "—"
+
+  hull_xrp:
+    enabled: true
+    symbol: XRPUSDT
+    position_size_usdt: 19
+    description: >
+      Hull Market Structure on XRP. Long on bullish CHoCH, short on
+      bearish CHoCH, flip on opposite signal.
+    backtest_win_rate: "—"
+
+  hull_doge:
+    enabled: true
+    symbol: DOGEUSDT
+    position_size_usdt: 19
+    description: >
+      Hull Market Structure on DOGE. Long on bullish CHoCH, short on
+      bearish CHoCH, flip on opposite signal.
+    backtest_win_rate: "—"

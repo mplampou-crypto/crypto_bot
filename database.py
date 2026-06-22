@@ -1,171 +1,137 @@
-"""
-database.py
------------
-SQLite βάση δεδομένων για αποθήκευση:
-  - Traders που ακολουθούμε
-  - Trades που έχουμε εκτελέσει
-  - P&L στατιστικά
-"""
-
+"""SQLite storage: per-strategy position state + closed-trade history."""
 import sqlite3
-import logging
-from datetime import datetime
-from dataclasses import dataclass
-from typing import Optional
+import threading
+from datetime import datetime, timezone
 
-logger = logging.getLogger(__name__)
-DB_PATH = "copybot.db"
-
-
-@dataclass
-class TradeRecord:
-    id: int
-    trader_uid: str
-    trader_nickname: str
-    symbol: str
-    side: str
-    size: float
-    entry_price: float
-    exit_price: float
-    pnl: float
-    status: str        # "open" | "closed"
-    opened_at: str
-    closed_at: str
+DB_PATH = "trades.db"
+_lock = threading.Lock()
+_conn = None
 
 
-class Database:
+def _now():
+    return datetime.now(timezone.utc).isoformat()
 
-    def __init__(self, path: str = DB_PATH):
-        self.path = path
-        self._init_tables()
 
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        return conn
+def init_db():
+    global _conn
+    _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    _conn.row_factory = sqlite3.Row
+    _conn.execute("PRAGMA journal_mode=WAL;")
+    _conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_positions (
+            strategy    TEXT PRIMARY KEY,
+            symbol      TEXT,
+            side        TEXT,            -- 'long' | 'short' | 'flat'
+            qty         REAL,
+            entry_price REAL,
+            entry_time  TEXT
+        )
+    """)
+    _conn.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy    TEXT,
+            symbol      TEXT,
+            side        TEXT,            -- 'long' | 'short'
+            qty         REAL,
+            entry_price REAL,
+            exit_price  REAL,
+            pnl         REAL,            -- net of fees, in USDT
+            pnl_pct     REAL,
+            win         INTEGER,         -- 1 win, 0 loss
+            entry_time  TEXT,
+            exit_time   TEXT
+        )
+    """)
+    _conn.commit()
 
-    def _init_tables(self):
-        with self._conn() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS traders (
-                    uid         TEXT PRIMARY KEY,
-                    nickname    TEXT NOT NULL,
-                    followed_at TEXT NOT NULL,
-                    active      INTEGER DEFAULT 1
-                );
 
-                CREATE TABLE IF NOT EXISTS trades (
-                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trader_uid       TEXT NOT NULL,
-                    trader_nickname  TEXT NOT NULL,
-                    symbol           TEXT NOT NULL,
-                    side             TEXT NOT NULL,
-                    size             REAL NOT NULL,
-                    entry_price      REAL NOT NULL,
-                    exit_price       REAL DEFAULT 0,
-                    pnl              REAL DEFAULT 0,
-                    order_id         TEXT DEFAULT '',
-                    status           TEXT DEFAULT 'open',
-                    opened_at        TEXT NOT NULL,
-                    closed_at        TEXT DEFAULT ''
-                );
-            """)
-        logger.info("✅ Database initialized")
+# ── strategy position state ─────────────────────────────────────
+def get_strategy_position(strategy):
+    cur = _conn.execute(
+        "SELECT * FROM strategy_positions WHERE strategy=?", (strategy,))
+    row = cur.fetchone()
+    return dict(row) if row else None
 
-    # ── Traders ──────────────────────────────────────────────────────────────
 
-    def add_trader(self, uid: str, nickname: str):
-        with self._conn() as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO traders (uid, nickname, followed_at, active)
-                VALUES (?, ?, ?, 1)
-            """, (uid, nickname, datetime.now().isoformat()))
-        logger.info(f"DB: + trader {nickname}")
+def set_strategy_position(strategy, symbol, side, qty, entry_price, entry_time):
+    with _lock:
+        _conn.execute("""
+            INSERT INTO strategy_positions
+                (strategy, symbol, side, qty, entry_price, entry_time)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(strategy) DO UPDATE SET
+                symbol=excluded.symbol, side=excluded.side, qty=excluded.qty,
+                entry_price=excluded.entry_price, entry_time=excluded.entry_time
+        """, (strategy, symbol, side, qty, entry_price, entry_time))
+        _conn.commit()
 
-    def remove_trader(self, uid: str):
-        with self._conn() as conn:
-            conn.execute("UPDATE traders SET active=0 WHERE uid=?", (uid,))
 
-    def get_active_traders(self) -> list[dict]:
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM traders WHERE active=1"
-            ).fetchall()
-        return [dict(r) for r in rows]
+def get_open_positions_for_symbol(symbol):
+    """Return [{strategy, side, qty}] for all non-flat strategies on a symbol."""
+    cur = _conn.execute(
+        "SELECT strategy, side, qty FROM strategy_positions "
+        "WHERE symbol=? AND side != 'flat'", (symbol,))
+    return [dict(r) for r in cur.fetchall()]
 
-    # ── Trades ───────────────────────────────────────────────────────────────
 
-    def open_trade(
-        self,
-        trader_uid: str,
-        trader_nickname: str,
-        symbol: str,
-        side: str,
-        size: float,
-        entry_price: float,
-        order_id: str = "",
-    ) -> int:
-        with self._conn() as conn:
-            cur = conn.execute("""
-                INSERT INTO trades
-                  (trader_uid, trader_nickname, symbol, side, size,
-                   entry_price, order_id, status, opened_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
-            """, (trader_uid, trader_nickname, symbol, side, size,
-                  entry_price, order_id, datetime.now().isoformat()))
-            return cur.lastrowid
+def get_all_strategy_positions():
+    cur = _conn.execute("SELECT * FROM strategy_positions")
+    return [dict(r) for r in cur.fetchall()]
 
-    def close_trade(
-        self,
-        trader_uid: str,
-        symbol: str,
-        side: str,
-        exit_price: float,
-        pnl: float,
-    ):
-        with self._conn() as conn:
-            conn.execute("""
-                UPDATE trades
-                SET status='closed', exit_price=?, pnl=?, closed_at=?
-                WHERE trader_uid=? AND symbol=? AND side=? AND status='open'
-            """, (exit_price, pnl, datetime.now().isoformat(),
-                  trader_uid, symbol, side))
 
-    def get_open_trades(self) -> list[dict]:
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM trades WHERE status='open' ORDER BY opened_at DESC"
-            ).fetchall()
-        return [dict(r) for r in rows]
+# ── closed trades ───────────────────────────────────────────────
+def insert_trade(strategy, symbol, side, qty, entry_price, exit_price,
+                 pnl, pnl_pct, win, entry_time):
+    with _lock:
+        _conn.execute("""
+            INSERT INTO trades
+                (strategy, symbol, side, qty, entry_price, exit_price,
+                 pnl, pnl_pct, win, entry_time, exit_time)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (strategy, symbol, side, qty, entry_price, exit_price,
+              pnl, pnl_pct, win, entry_time, _now()))
+        _conn.commit()
 
-    def get_all_trades(self, limit: int = 50) -> list[dict]:
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?", (limit,)
-            ).fetchall()
-        return [dict(r) for r in rows]
 
-    # ── Στατιστικά ───────────────────────────────────────────────────────────
+def get_recent_trades(limit=25):
+    cur = _conn.execute(
+        "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
+    return [dict(r) for r in cur.fetchall()]
 
-    def get_stats(self) -> dict:
-        with self._conn() as conn:
-            row = conn.execute("""
-                SELECT
-                    COUNT(*)                          AS total_trades,
-                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
-                    SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) AS losses,
-                    ROUND(SUM(pnl), 2)                AS total_pnl,
-                    ROUND(AVG(pnl), 2)                AS avg_pnl
-                FROM trades WHERE status='closed'
-            """).fetchone()
 
-        total = row["total_trades"] or 0
-        wins  = row["wins"] or 0
-        return {
-            "total_trades": total,
-            "wins":         wins,
-            "losses":       row["losses"] or 0,
-            "win_rate":     round(wins / total * 100, 1) if total > 0 else 0,
-            "total_pnl":    row["total_pnl"] or 0,
-            "avg_pnl":      row["avg_pnl"] or 0,
+def get_stats():
+    """Overall + per-strategy aggregates."""
+    o = _conn.execute("""
+        SELECT COUNT(*) n,
+               COALESCE(SUM(win),0) wins,
+               COALESCE(SUM(pnl),0) pnl
+        FROM trades
+    """).fetchone()
+    total = o["n"]
+    overall = {
+        "trades": total,
+        "wins": o["wins"],
+        "losses": total - o["wins"],
+        "win_rate": round(o["wins"] / total * 100, 1) if total else 0.0,
+        "pnl": round(o["pnl"], 2),
+    }
+
+    per = {}
+    cur = _conn.execute("""
+        SELECT strategy,
+               COUNT(*) n,
+               COALESCE(SUM(win),0) wins,
+               COALESCE(SUM(pnl),0) pnl
+        FROM trades GROUP BY strategy
+    """)
+    for r in cur.fetchall():
+        n = r["n"]
+        per[r["strategy"]] = {
+            "trades": n,
+            "wins": r["wins"],
+            "losses": n - r["wins"],
+            "win_rate": round(r["wins"] / n * 100, 1) if n else 0.0,
+            "pnl": round(r["pnl"], 2),
         }
+    return overall, per
